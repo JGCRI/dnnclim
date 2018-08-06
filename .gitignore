@@ -1,0 +1,11 @@
+# Ignore all netcdf files
+*.nc
+testdata
+
+# Ignore emacs backup files
+*~
+
+# Ignore python cruft
+__pycache__
+*.egg-info
+
