@@ -7,6 +7,7 @@ Functions for importing and exporting data
 
 import netCDF4
 import numpy as np
+import os.path
 
 def readncfiles(ncfiles, varname, fldname=None, datain=None,
                 latdim='lat', londim='lon', timedim='time'):
@@ -69,5 +70,45 @@ def readncfiles(ncfiles, varname, fldname=None, datain=None,
         ## variables.  This should be fine as long as all of the data come from
         ## the same ESM.
         rslt[scenid][varname] = data
-        
+
     return rslt
+
+def readannualmeans(datadir, datain, fntemplate='{}_Amon_{}_{}_{}_200601-210012.nc_gavg.txt'):
+    """
+    Read the area-weighted global mean values corresponding to a dataset.
+
+    :param datadir: Directory containing the data
+    :param datain: Structure returned by readnetcdf
+    :param fntemplate: Template for forming the file name from the varname and scenario
+    :return: Nested dictionary of global means corresponding to the data in datain
+
+    The globally averaged data isn't in netCDF files, so we can't rely on the
+    netCDF metadata to tell us what models, times, etc, the data correspond to.
+    Instead, we use the metadata we collected from the field inputs to decide
+    what global averages we should be looking for.  The scenario name is used to
+    construct the file name for the global data by substituting into the
+    template.  The substitutions will be, in order: 
+    (varname, model_id, experiment_id, parent_experiment_rip).
+    """
+
+    rslt = {}
+    for scenario in datain.keys():
+        rslt[scenario] = {} 
+        (modelid, exptid, rip) = scenario.split('.')
+
+        for varname in datain[scenario].keys():
+            filename = fntemplate.format(varname, modelid, exptid, rip)
+
+            ## input format is a sequence of values, one for each month.
+            f = open(filename,'r')
+            vals = np.array([float(x) for x in f.readlines()])
+            f.close()
+
+            rslt[scenario][varname] = vals
+
+    return rslt
+
+            
+
+            
+            
