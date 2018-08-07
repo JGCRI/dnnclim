@@ -8,6 +8,7 @@ Functions for importing and exporting data
 import netCDF4
 import numpy as np
 import os.path
+import sys
 
 def readncfiles(ncfiles, varname, fldname=None, datain=None,
                 latdim='lat', londim='lon', timedim='time'):
@@ -73,7 +74,7 @@ def readncfiles(ncfiles, varname, fldname=None, datain=None,
 
     return rslt
 
-def readannualmeans(datadir, datain, fntemplate='{}_Amon_{}_{}_{}_200601-210012.nc_gavg.txt'):
+def readannualmeans(datain, datadir = '.', fntemplate='{}_Amon_{}_{}_{}_200601-210012.nc_gavg.txt'):
     """
     Read the area-weighted global mean values corresponding to a dataset.
 
@@ -97,7 +98,7 @@ def readannualmeans(datadir, datain, fntemplate='{}_Amon_{}_{}_{}_200601-210012.
         (modelid, exptid, rip) = scenario.split('.')
 
         for varname in datain[scenario].keys():
-            filename = fntemplate.format(varname, modelid, exptid, rip)
+            filename = os.path.join(datadir, fntemplate.format(varname, modelid, exptid, rip))
 
             ## input format is a sequence of values, one for each month.
             f = open(filename,'r')
@@ -109,6 +110,47 @@ def readannualmeans(datadir, datain, fntemplate='{}_Amon_{}_{}_{}_200601-210012.
     return rslt
 
             
+def readtopo(ncfiles):
+    """
+    Read the land fraction and terrain elevation for the model grid
 
-            
-            
+    :param ncfiles: List of two filenames, one for each variable.  The order
+                    doesn't matter.
+    :return: Dictionary with entries 'sftlf' and 'orog', corresponding to the
+                    two grid variables.
+
+    Unlike the model output, these variables are neither scenario nor time
+    specific.  They are model specific, but we don't check whether the model
+    matches the model for the output variables.  Failing to provide both
+    variables (and only those variables) will cause an exception.
+    """
+
+    rslt = {}
+    varnames = ['sftlf', 'orog'] # allowed variable names
+
+    for filename in ncfiles:
+        ncdata = netCDF4.Dataset(filename)
+        filevars = ncdata.variables.keys()
+        for vn in varnames:
+            if vn in filevars:
+                varname = vn
+                break
+        else:
+            ## Didn't find any relevant variable in this file.  Don't report an
+            ## error yet.  Maybe it will all work out.
+            sys.stderr.write('readtopo:  Warning:  file {} had no relevant variables.  Found variables: {}\n'.format(filename, filevars))
+            continue            # can't process this file
+
+        rslt[varname] = np.array(ncdata.variables[varname])
+
+    ## check that we got the right variables
+    l = list(rslt.keys())
+    l.sort()
+    varnames.sort()
+    if not(l == varnames):
+        sys.stderr.write("readtopo:  Didn't find all required variables.  Expected {}.  Found {}\n".format(varnames, l))
+        raise "readtopo: bad input"
+
+    return rslt
+
+    
