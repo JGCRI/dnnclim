@@ -74,7 +74,7 @@ def readncfiles(ncfiles, varname, fldname=None, datain=None,
 
     return rslt
 
-def readannualmeans(datain, datadir = '.', fntemplate='{}_Amon_{}_{}_{}_200601-210012.nc_gavg.txt'):
+def readglobmeans(datain, datadir = '.', fntemplate='{}_Amon_{}_{}_{}_200601-210012.nc_gavg.txt'):
     """
     Read the area-weighted global mean values corresponding to a dataset.
 
@@ -147,10 +147,59 @@ def readtopo(ncfiles):
     l = list(rslt.keys())
     l.sort()
     varnames.sort()
-    if not(l == varnames):
+    if not (l == varnames):
         sys.stderr.write("readtopo:  Didn't find all required variables.  Expected {}.  Found {}\n".format(varnames, l))
         raise "readtopo: bad input"
 
     return rslt
 
     
+def chkdata(esmvars, globmeans, topo, monthly=True):
+    """
+    Check that the data read in from the other functions is compatible.
+
+    :param esmvars: dictionary of ESM outputs returned by readncfiles
+    :param globmeans: dictionary of globally averaged ESM variables returned by readglobmeans
+    :param topo: dictionary of topographic data returned by readtopo
+    :param monthly: flag indicating that the data is monthly
+
+    We check the data for the following consistency properties:
+       1. All ESM fields and global means have the same time dimension.
+       2. Each ESM field has a corresponding global mean time series.
+       3. Each temperature field has a corresponding precip field and vice versa.
+       4. All ESM fields and topo fields have the same spatial dimensions.
+
+    If the monthly flag is set, we additionally check that:
+       5. The number of time steps is a multiple of 12.
+
+    """
+
+    scens = list(esmvars.keys())
+    (nt, nlat, nlon) = esmvars[scens[0]]['tas'].shape
+
+    ## property 5, if applicable
+    if monthly and nt % 12 != 0:
+        raise "chkdata: time series length is not a multiple of 12."
+    
+    for scen in scens:
+        scendata = esmvars[scen]
+        ## property 3
+        if 'tas' not in scendata or 'pr' not in scendata:
+            raise "chkdata: temperature and precipitation not provided for all scenarios."
+
+        ## property 1
+        for v in scendata:
+            if scendata[v].shape != (nt, nlat, nlon): # also covers property 4 for the ESM fields
+                raise "chkdata: dimension mismatch in ESM output."
+            if globmeans[scen][v].shape[0] != nt:     # implicitly tests property 2, will raise KeyError if not satisfied
+                raise "chkdata: time dimension mismatch in global means."
+
+        ## property 4 for topo fields (ESM fields were handled above)
+        for t in topo:
+            if topo[t].shape != (nlat, nlon):
+                raise "chkdata: dimension mismatch for topo"
+
+    sys.stdout.write('Data checks passed.\n')
+    return None
+
+
