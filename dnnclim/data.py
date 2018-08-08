@@ -203,3 +203,54 @@ def chkdata(esmvars, globmeans, topo, monthly=True):
     return None
 
 
+def annualavg(esmvars, globmeans):
+    """Compute annual means from monthly data.
+
+    :param esmvars: ESM output fields from readncfiles
+    :param globmeans: Global means from readglobmeans
+    :return: tuple (esmfld, gmean) of annually averaged fields and global means
+
+    The structures returned will be indexed by scenario and variable, just as
+    the input structures were.
+    """
+
+    scens = list(esmvars.keys())
+    varnames = list(esmvars[scens[0]].keys())
+
+    (nt, nlat, nlon) = esmvars[scens[0]][varnames[0]].shape
+    nyear = int(nt / 12)
+    dims = (nyear, nlat, nlon)  # output dimensions
+    
+    
+    esmfld = {}
+    gmean = {}
+
+    months = np.array(range(12)) # month indexes
+
+    for scen in scens:
+        esmfld[scen] = {}
+        gmean[scen] = {}
+        
+        for var in varnames:
+            infld = esmvars[scen][var]
+            inmean = globmeans[scen][var]
+            outfld = np.zeros(dims)
+            outmean = np.zeros(nyear)
+
+            print(scen,'   ', var)
+
+            for year in range(nyear):
+                idx = 12*year + months
+
+                print('year= ', year)
+                
+                outfld[year,] = np.mean(infld[idx,], axis=0)
+                outmean[year,] = np.mean(inmean[idx,], axis=0)
+
+            esmfld[scen][var] = outfld
+            gmean[scen][var] = outmean
+
+    return (esmfld, gmean)
+
+
+    
