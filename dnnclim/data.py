@@ -292,9 +292,16 @@ def preparedata(esmvars, globmeans, topo, trainfrac=0.5, devfrac=0.25):
         fields.append(field)
         gmeans.append(gmean)
 
-    ## concatenate all of the stacked fields
-    allfields = np.concatenate(fields) # result is (nscen*nt) x 2 x nlat x nlon
-    allgmeans = np.concatenate(gmeans)
+    ## concatenate all of the stacked fields.  Then transpose them to
+    ## put channels in the last dimension, conforming to tensorflow
+    ## convention.
+    allfields = np.transpose(np.concatenate(fields),
+                             axes=[0,2,3,1]) # result is (nscen*nt) x nlat x nlon x 2
+    allgmeans = np.concatenate(gmeans)       # result is (nscen*nt) x 2
+
+    ## Conventionally, tensorflow puts channels in the last dimension.
+    ## Transpose the arrays to conform.
+    
 
     nscen = len(esmvars)
     dim = esmvars[next(iter(esmvars))]['tas'].shape
@@ -341,8 +348,9 @@ def preparedata(esmvars, globmeans, topo, trainfrac=0.5, devfrac=0.25):
     rslt['test']['fld'] = allfields[idxtest,]
     rslt['test']['gmean'] = allgmeans[idxtest,]
 
-    ## add in the topo fields
-    rslt['topo'] = np.stack([topo['sftlf'], topo['orog']])
+    ## add in the topo fields.  Stack them with the two channels in the last dimension
+    rslt['topo'] = np.stack([topo['sftlf'], topo['orog']], axis=-1)
+    
 
     sys.stdout.write('topo dim:  {}\n'.format(rslt['topo'].shape))
     
