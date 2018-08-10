@@ -237,13 +237,9 @@ def annualavg(esmvars, globmeans):
             outfld = np.zeros(dims)
             outmean = np.zeros(nyear)
 
-            print(scen,'   ', var)
-
             for year in range(nyear):
                 idx = 12*year + months
 
-                print('year= ', year)
-                
                 outfld[year,] = np.mean(infld[idx,], axis=0)
                 outmean[year,] = np.mean(inmean[idx,], axis=0)
 
@@ -254,3 +250,98 @@ def annualavg(esmvars, globmeans):
 
 
     
+def preparedata(esmvars, globmeans, topo, trainfrac=0.5, devfrac=0.25):
+    """Separate data into test, training, and dev sets, and organize into a single structure.
+
+    :param esmvars: dictionary of ESM outputs returned by readncfiles
+    :param globmeans: dictionary of globally averaged ESM variables returned by readglobmeans
+    :param topo: dictionary of topographic data returned by readtopo
+    :param trainfrac: fraction of the data to include in the training set
+    :param devfrac: fraction of the data to include in the dev set
+
+    This function concatenates all of the input fields into a single
+    3-d array and all of the global means into a single 1-d array (in
+    corresponding order).  These data are randomly split into
+    training, dev, and test sets.  All of this is compiled into a
+    single structure that is indexed by set (train/dev/test) and data
+    type (fld/gmean).  For both the fields and the means, the two
+    variables (temperature and precipitation) are stacked into a
+    single array.  For example, rslt['dev']['gmean'][:,0] gives the
+    global mean temperature values for the dev set,
+    rslt['train']['fld'][:,1] gives the precipitation field for the
+    training set.  (Note that we store global mean precip even though
+    we don't currently use it for anything in the model.)
+
+    The topo data is constant across all cases; therefore, it is not
+    split into train/dev/test sets.  The two 2-d topo fields are
+    stacked into a single two-channel field (landfrac, elevation) and
+    stored as rslt['topo'].
+
+    """
+
+    ## collect a list of ESM fields and global mean values to concatenate
+    fields = []
+    gmeans = []
+    
+    for scen in esmvars: 
+        field = np.stack([esmvars[scen]['tas'], esmvars[scen]['pr']], axis=1) # result is nt x 2 x nlat x nlon
+        gmean = np.stack([globmeans[scen]['tas'], globmeans[scen]['pr']], axis=1) # result is nt x 2
+
+        fields.append(field)
+        gmeans.append(gmean)
+
+    ## concatenate all of the stacked fields
+    allfields = np.concatenate(fields) # result is (nscen*nt) x 2 x nlat x nlon
+    allgmeans = np.concatenate(gmeans)
+
+    nscen = len(esmvars)
+    dim = esmvars[next(iter(esmvars))]['tas'].shape
+
+    sys.stdout.write('dim fields = {}\n'.format(dim))
+    sys.stdout.write('nscen = {}\n'.format(nscen))
+    sys.stdout.write('dim allfields = {}\n'.format(allfields.shape))
+    sys.stdout.write('dim allgmeans = {}\n'.format(allgmeans.shape))
+
+    ## split in to train/dev/test
+
+    testfrac = 1.0 - (trainfrac+devfrac)
+    if not(trainfrac > 0 and trainfrac < 1 and
+           devfrac > 0 and devfrac < 1 and
+           testfrac > 0 and testfrac < 1):
+        raise 'trainfrac, devfrac, and testfrac must all be between 0 and 1'
+    
+    ncase = allfields.shape[0]
+    itrain = int(np.round(trainfrac*ncase))
+    idev = itrain + int(np.round(devfrac*ncase))
+    
+    idx = np.random.permutation(ncase)
+
+    idxtrain = idx[np.arange(itrain)]
+    idxdev = idx[np.arange(itrain, idev)]
+    idxtest = idx[np.arange(idev, ncase)]
+
+    sys.stdout.write('total cases: {}\n'.format(ncase))
+    sys.stdout.write('training cases: {}\n'.format(itrain))
+    sys.stdout.write('  {}\n'.format(idxtrain))
+    sys.stdout.write('dev cases: {}\n'.format(idev-itrain))
+    sys.stdout.write('  {}\n'.format(idxdev))
+    sys.stdout.write('test cases: {}\n'.format(ncase-idev))
+    sys.stdout.write('  {}\n'.format(idxtest))
+
+    rslt = {}
+    for s in ['train','dev','test']:
+        rslt[s] = {}
+
+    rslt['train']['fld'] = allfields[idxtrain,]
+    rslt['train']['gmean'] = allgmeans[idxtrain,]
+    rslt['dev']['fld'] = allfields[idxdev,]
+    rslt['dev']['gmean'] = allgmeans[idxdev,]
+    rslt['test']['fld'] = allfields[idxtest,]
+    rslt['test']['gmean'] = allgmeans[idxtest,]
+
+    ## add in the topo fields
+    rslt['topo'] = np.stack([topo['sftlf'], topo['orog']])
+
+    sys.stdout.write('topo dim:  {}\n'.format(rslt['topo'].shape))
+    
+    return rslt
