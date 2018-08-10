@@ -9,6 +9,7 @@ import netCDF4
 import numpy as np
 import os.path
 import sys
+import pickle
 
 def readncfiles(ncfiles, varname, fldname=None, datain=None,
                 latdim='lat', londim='lon', timedim='time'):
@@ -128,6 +129,7 @@ def readtopo(ncfiles):
     rslt = {}
     varnames = ['sftlf', 'orog'] # allowed variable names
 
+    
     for filename in ncfiles:
         ncdata = netCDF4.Dataset(filename)
         filevars = ncdata.variables.keys()
@@ -344,4 +346,71 @@ def preparedata(esmvars, globmeans, topo, trainfrac=0.5, devfrac=0.25):
 
     sys.stdout.write('topo dim:  {}\n'.format(rslt['topo'].shape))
     
+    return rslt
+
+def process_dir(inputdir,
+                outfile = 'dnnclim.dat',
+                tempglob = 'tas*.nc',
+                prglob = 'pr*.nc',
+                lfglob = 'sftlf*.nc',
+                elevglob = 'orog*.nc',
+                seed = 8675309):
+    """Process and save all of the data in an input directory.
+
+    :inputdir: Directory containing the input data
+    :outfile: Name of the file to save the results in. This will go in the current directory, by default
+    :tempglob: Glob pattern for the temperature files
+    :prglob: Glob pattern for the precipitation files
+    :lfglob: Glob pattern for the land fraction file. There should be only one file matching this pattern in the input directory.
+    :elevglob: Glob pattern for the elevation file.  There should be only one file matching this pattern in the input directory.
+    :seed: Seed for the random number generator used to separate data into train/dev/test sets
+    :return: Processed dataset with train/dev/test subsets (see preparedata()).
+
+    This function runs all of the steps defined elsewhere in this
+    module, culminating with preparedata().  The resulting data
+    structure is pickled and written to the file specified by outfile;
+    it is also returned from the function.  The file output can be
+    suppressed by passing None as the outfile parameter.
+
+    """
+    import glob
+    
+    def getfilenames(g, unique=False):
+        fg = os.path.join(inputdir, g)
+        files = glob.glob(fg)
+        if len(files) == 0:
+            raise 'No files matching {} found.'.format(g)
+        if unique and len(files) > 1:
+            sys.stderr.write('WARNING: multiple files matching {} found. Using just the first one'.format(g))
+            files = files[0:1]
+        return files
+    
+    tempfiles = getfilenames(tempglob)
+    prfiles = getfilenames(prglob)
+    topofiles = getfilenames(lfglob)
+    topofiles += getfilenames(elevglob)
+
+    print('tempfiles : ', tempfiles)
+    print('prfiles : ', prfiles)
+    print('topofiles : ', topofiles)
+
+    flds = readncfiles(tempfiles, 'tas')
+    flds = readncfiles(prfiles, 'pr', datain=flds) # add precip data to previous
+
+    gmeans = readglobmeans(flds, inputdir)
+
+    topo = readtopo(topofiles)
+
+    chkdata(flds, gmeans, topo)
+
+    (flds, gmeans) = annualavg(flds, gmeans)
+
+    rslt = preparedata(flds, gmeans, topo)
+
+    
+    if outfile is not None:
+        outfile = open(outfile, 'wb') 
+        pickle.dump(rslt, outfile)
+        outfile.close()
+
     return rslt
