@@ -11,14 +11,76 @@ import tensorflow as tf
 import numpy as np
 import pickle
 import os
+import sys
 
 ## Number of channels in the scalar input.  Currently just Tg and t.
 scalar_input_nchannel = 2
 
 def validate_modelspec(modelspec):
-    ## TODO:  implement model checks.
-    return True
+    if len(modelspec) != 4:
+        raise RuntimeError('validate_modelspec: expected length = 4, found length = {}'.format(len(modelspec)))
 
+    ## Check the content of each branch
+    dsbranch = modelspec[0]
+    ds_stage_sizes = [(192, 288)] # size of input to each stage, also, for stage>0, size of output of previous stage.
+    for stage in dsbranch:
+        for layer in stage[:-1]:
+            ## All layers except the last must be convolutional
+            chkconv(layer, 'dsbranch')
+        layer = stage[-1]
+        chkmxpl(layer, 'dsbranch')
+
+        ## Compute the output size of the stage; this will be the input size for the next stage
+        insize = ds_stage_sizes[-1] 
+        outsize = (int(insize[0] / layer[1][0]) , int(insize[1] / layer[1][1]))
+        ds_stage_sizes.append(outsize)
+
+    sclbranch = modelspec[1]
+    scl_stage_sizes = [(1,1)]   # stage output sizes, 
+    for stage in sclbranch:
+        ## First layer must be an upsampling layer
+        layer = stage[0]
+        chkxconv(layer, 'sclbranch')
+        insize = scl_stage_sizes[-1]
+        outsize = (insize[0] * layer[3][0], insize[1] * layer[3][1])
+        scl_stage_sizes.append(outsize)
+
+        ## remaining layers must be convolutions
+        for layer in stage[1:]:
+            chkconv(layer, 'sclbranch')
+
+    ## The output of the last stage of the scalar branch must be the
+    ## same size as that of the last downsampling stage.
+    if scl_stage_sizes[-1] != ds_stage_sizes[-1]:
+        raise RuntimeError("Mismatch between dsbranch and sclbranch final sizes:  {} vs {}".format(ds_stage_sizes[-1], scl_stage_sizes[-1]))
+
+    usbranch = modelspec[2]
+    ds_stage_sizes.reverse()
+    us_stage_sizes = ds_stage_sizes[0:1]
+    for stage in usbranch:
+        ## First layer must be upsampling layer
+        layer = stage[0]
+        chkxconv(layer, 'usbranch')
+        insize = us_stage_sizes[-1]
+        outsize = (insize[0] * layer[3][0], insize[1] * layer[3][1])
+        us_stage_sizes.append(outsize)
+
+        ## remaining layers must be convolutions
+        for layer in stage[1:]:
+            chkconv(layer, 'usbranch')
+
+    ## The sizes of all of the stages in the upsampling branch must be
+    ## the same as the corresponding stages in the downsampling
+    ## branch.
+    if us_stage_sizes != ds_stage_sizes:
+        raise RuntimeError("Mismatch in dsbranch and usbranch stage sizes.  sizes(dsbranch):  {}  sizes(usbranch):  {}".format(ds_stage_sizes, us_stage_sizes))
+        
+    ## Success.  Print some summary statistics.
+    sys.stdout.write('Downsampling branch:\t{} stages\tfinal size: {}\n'.format(len(dsbranch), ds_stage_sizes[0]))
+    sys.stdout.write('      Scalar branch:\t{} stages\tfinal size: {}\n'.format(len(sclbranch), scl_stage_sizes[-1]))
+    sys.stdout.write('  Upsampling branch:\t{} stages\tfinal size: {}\n'.format(len(usbranch), us_stage_sizes[-1]))
+        
+    
 def build_graph(modelspec):
     """
     Given a model specification, build the tensorflow graph for that model
@@ -75,7 +137,7 @@ def build_graph(modelspec):
                     break
                 else:
                     ## shouldn't be able to get here
-                    raise "Invalid modelspec slipped through somehow."
+                    raise RuntimeError("Invalid modelspec slipped through somehow.")
 
     ## create the scalar upsampling branch
     sclspec = modelspec[1]
@@ -90,7 +152,7 @@ def build_graph(modelspec):
                     layerin = mk_convlayer(layer, layerin)
                 else:
                     ## should't be able to get here
-                    raise "Invalid modelspec slipped through somehow."
+                    raise RuntimeError("Invalid modelspec slipped through somehow.")
 
             ## output from last layer of the stage becomes input for next stage
             scalar_stage_inputs.append(layerin)
@@ -132,7 +194,7 @@ def build_graph(modelspec):
                     layerin = mk_convlayer(layer, layerin)
                 else:
                     ## should be able to get here
-                    raise "Invalid modelspec slipped through somehow"
+                    raise RuntimeError("Invalid modelspec slipped through somehow")
         output = layerin        # i.e., the result of the last convolutional layer in the last stage
         
     ## That's all of the branches, now extract the results.
@@ -160,6 +222,7 @@ def build_graph(modelspec):
     
 
 
+#### Helper functions
 
 def mk_convlayer(spec, layerin):
     """Make a convolutional layer from its specification"""
@@ -182,3 +245,43 @@ def mk_xconvlayer(spec, layerin):
     stride = layer[3]
     return tf.layers.conv2d_transpose(layerin, nfilt, dimfilt, stride, padding='SAME')
     
+
+def chkconv(layer, brname):
+    """Check that the layer specification for a convolutional layer is valid.
+
+    Valid format:  ('C', nfilt, (filt_xsize, filt_ysize))
+
+    """
+
+    if layer[0] != 'C' or len(layer) != 3 or not isinstance(layer[1], int)  or not chkintseq(layer[2], 2):
+        raise RuntimeError('validate_modelspec: illegal layer in {}. Found spec: "{}"'.format(brname, layer))
+
+def chkmxpl(layer, brname):
+    """Check that the layer specification for a max pooling layer is valid.
+
+    Valid format: ('D', (poox_xdim, pool_ydim))
+
+    """
+
+    if layer[0] != 'D' or len(layer) != 2 or not chkintseq(layer[1], 2):
+        raise RuntimeError('validate_modelspec: illegal layer in {}. Found spec: "{}"'.format(brname, layer))
+
+def chkxconv(layer, brname):
+    """Check that the layer specification for a transpose convolution layer is valid.
+
+    Valid format: ('U', nfilt, (filt_xdim, filt_ydim), (stride_x, stride_y))
+
+    """
+
+    if (layer[0] != 'U' or not isinstance(layer[1], int) or
+        not chkintseq(layer[2],2) or not chkintseq(layer[3],2)):
+        raise RuntimeError('chkxconv: illegal layer in {}. Found spec: {}'.format(brname, layer))
+
+
+def chkintseq(seq, exlen):
+    """Check that an object is a sequence of integers with specified length"""
+
+    if len(seq) == exlen and all([isinstance(x, int) for x in seq]):
+        return True
+    else: 
+        return False
