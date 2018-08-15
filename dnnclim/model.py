@@ -101,19 +101,25 @@ def build_graph(modelspec):
         ## scalar inputs, such as global mean temperature, time, etc.
         scalarin = tf.placeholder(dtype=tf.float32, shape=(None, scalar_input_nchannel),
                                   name='scalars')
-        ## Real output of the ESM for evaluating loss function
-        groundtruth = tf.placeholder(dtype=tf.float32, shape=(None, 192,288,2), name='groundtruth')
 
         ## Convert scalars to a 1x1 array
         scalars = tf.expand_dims(tf.expand_dims(scalarin, axis=1), axis=2)
 
         ## create a list to hold the inputs to each stage of each branch.
-        ds_stage_inputs = [topoin]
+        ds_stage_inputs = [tf.expand_dims(topoin, axis=0)]
         scalar_stage_inputs = [scalars]
+
+        ## Find out how many cases we have.  This will be needed to broadcast the topo data.
+        ncase = tf.shape(scalarin)[0]
+
+    with tf.variable_scope('groundtruth'):
+        ## Real output of the ESM for evaluating loss function
+        groundtruth = tf.placeholder(dtype=tf.float32, shape=(None, 192,288,2), name='groundtruth')
 
     ## Other arguments specification
     otherargs = modelspec[3]
-        
+
+    
     ## create the downsampling branch for the topo
     ## TODO: add regularization to each layer, if requested.
     dsspec = modelspec[0]
@@ -131,13 +137,23 @@ def build_graph(modelspec):
                     ## recorded *before* pooling), and add the result
                     ## of the pooling to the end of the stage inputs
                     ## list.
-                    dimpool = layer[1]
-                    ds_stage_outputs.append(layerin)
-                    ds_stage_inputs.append(mk_downsamplelayer(layer, layerin))
+                    ds_stage_outputs.append(layerin) # 'outputs' has the penultimate result from each stage
+                    next_stage_input = mk_downsamplelayer(layer, layerin)
+                    ds_stage_inputs.append(next_stage_input)
                     break
                 else:
                     ## shouldn't be able to get here
                     raise RuntimeError("Invalid modelspec slipped through somehow.")
+
+        ## The result of this branch is the last item in "stage
+        ## inputs" (it's what would have been the input to the next
+        ## stage, if there were one).  Broadcast it along the 0th axis
+        ## to be compatible with the rest of the input data.
+        dsrslt = bcast_case(ds_stage_inputs[-1], ncase)
+
+        ## Also broadcast the tensors in the outputs arrays.
+        ds_stage_outputs = [bcast_case(x, ncase) for x in ds_stage_outputs]
+
 
     ## create the scalar upsampling branch
     sclspec = modelspec[1]
@@ -157,22 +173,21 @@ def build_graph(modelspec):
             ## output from last layer of the stage becomes input for next stage
             scalar_stage_inputs.append(layerin)
 
+
     ## concatenate the result of the downsampling to the result of the
     ## scalar upsampling to form the input for the upsampling branch.
     ## The final result of each branch is the last element in its list
     ## of stage inputs.
-    tf.assert_equal(tf.shape(ds_stage_inputs[-1])[0:3],
-                    tf.shape(scalar_stage_inputs[-1])[0:3],
-                    summarize=3,
-                    message='Incompatible shapes joining scalars to downsampling')
-    us_stage_inputs = [tf.concat([ds_stage_inputs[-1], scalar_stage_inputs[-1]],
-                                 axis = 3,
-                                 name='join_ds_to_scalar')]
+    with tf.variable_scope('join_ds2scl'):
+        us_stage_inputs = [tf.concat([dsrslt, scalar_stage_inputs[-1]],
+                                     axis = 3,
+                                     name='join_ds_to_scalar')]
 
     ## create the main upsampling branch
     usspec = modelspec[2]
     ds_stage_idx = 0
     ds_stage_outputs.reverse()
+
     with tf.variable_scope('upsampling'):
         for stage in usspec:
             layerin = us_stage_inputs[-1]
@@ -184,12 +199,13 @@ def build_graph(modelspec):
                     upsamp = mk_xconvlayer(layer, layerin) 
                     bindlayer = ds_stage_outputs[ds_stage_idx]
                     ds_stage_idx += 1
-                    
+
                     tf.assert_equal(tf.shape(bindlayer)[0:3],
                                     tf.shape(upsamp)[0:3],
                                     summarize=3,
                                     message='Incompatible shapes joining U branches: ')
-                    layerin = tf.concat([bindlayer, layerin], axis=3, name='join_U_branch')
+                    layerin = tf.concat([bindlayer, upsamp], axis=3, name='join_U_branch')
+                    # layerin = upsamp
                 elif layer[0] == 'C':
                     layerin = mk_convlayer(layer, layerin)
                 else:
@@ -219,7 +235,42 @@ def build_graph(modelspec):
     train_step = tf.train.AdamOptimizer(otherargs['learnrate']).minimize(loss, name='train_step')
 
     return(topoin, scalarin, groundtruth, output, loss, train_step)
-    
+
+def bcast_case(tensorin, ncase):
+    """Broadcast case-independent tensor to be compatible with case-dependent tensors."""
+    newshape = tf.concat([(ncase,), tf.shape(tensorin)[1:]], axis=0)
+    return tensorin + tf.zeros(newshape)
+
+
+def runmodel(modelspec, climdata, savefile=None):
+    """Train and evaluate a model.
+
+    :param modelspec: A model specification structure
+    :param climdata: Structure containing training and dev data sets
+    :param savefile: Base filename for checkpoint outputs
+    :return: (perf, chkfile) Dev set performance and full name of the checkpoint file 
+             corresponding to the best performance (i.e., including the iteration number)
+
+    """
+
+    (topoin, scalarin, groundtruth, output, loss, train_step) = build_graph(modelspec)
+
+    with tf.Session() as sess:
+        if savefile is not None:
+            saver = tf.train.Saver()
+        summarywriter = tf.summary.FileWriter('logs', sess.graph)
+
+        init = tf.global_variables_initializer()
+        sess.run(fetches=[init])
+
+        fd={topoin:climdata['topo'],
+            scalarin:climdata['train']['gmean'],
+            groundtruth:climdata['train']['fld']}
+        (lossval,) = sess.run(fetches=[loss], feed_dict=fd)
+
+
+
+        return (lossval, None)
 
 
 #### Helper functions
@@ -229,21 +280,24 @@ def mk_convlayer(spec, layerin):
     
     nfilt = spec[1]
     dimfilt = spec[2]
-    return tf.layers.conv2d(layerin, nfilt, dimfilt, padding='SAME')
+    return tf.layers.conv2d(layerin, nfilt, dimfilt,
+                            padding='SAME', activation=tf.nn.relu)
 
 
 def mk_downsamplelayer(spec, layerin):
     """Make a downsampling (max pooling) layer from its specification"""
     
-    dimpool = layer[1] 
-    return tf.layers.max_pooling2d(layerin, dimpool, strides=(1,1), padding='SAME')
+    dimpool = spec[1]
+    return tf.layers.max_pooling2d(layerin, pool_size=dimpool, strides=dimpool,
+                                   padding='SAME')
 
 
 def mk_xconvlayer(spec, layerin):
-    nfilt = layer[1]
-    dimfilt = layer[2]
-    stride = layer[3]
-    return tf.layers.conv2d_transpose(layerin, nfilt, dimfilt, stride, padding='SAME')
+    nfilt = spec[1]
+    dimfilt = spec[2]
+    stride = spec[3]
+    return tf.layers.conv2d_transpose(layerin, nfilt, dimfilt, stride,
+                                      padding='SAME', activation=tf.nn.relu)
     
 
 def chkconv(layer, brname):
