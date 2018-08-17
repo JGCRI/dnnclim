@@ -15,71 +15,110 @@ import sys
 
 ## Number of channels in the scalar input.  Currently just Tg and t.
 scalar_input_nchannel = 2
+geo_input_nchannel = 4
 
 def validate_modelspec(modelspec):
     if len(modelspec) != 4:
         raise RuntimeError('validate_modelspec: expected length = 4, found length = {}'.format(len(modelspec)))
 
+    pcount = 0                  # running count of free parameters
+    
     ## Check the content of each branch
     dsbranch = modelspec[0]
-    ds_stage_sizes = [(192, 288)] # size of input to each stage, also, for stage>0, size of output of previous stage.
+    ds_stage_sizes = [(192, 288, geo_input_nchannel)] # size of input to each stage, also, for stage>0, size of output of previous stage.
+    ds_copy_sizes = []                                 # size of the images that will be copied to the upsampling branch
+    dsnchannel = geo_input_nchannel # number of channels coming into each layer
     for stage in dsbranch:
         for layer in stage[:-1]:
             ## All layers except the last must be convolutional
             chkconv(layer, 'dsbranch')
+            pcount += convnparam(layer, dsnchannel)
+            print('***layer param: {}'.format(convnparam(layer, dsnchannel)))
+            print('\tnchannel in= {}  nchannel out= {}'.format(dsnchannel, layer[1]))
+            dsnchannel = layer[1]
         layer = stage[-1]
-        chkmxpl(layer, 'dsbranch')
+        chkmxpl(layer, 'dsbranch') # no parameters for max pooling layer.
 
         ## Compute the output size of the stage; this will be the input size for the next stage
-        insize = ds_stage_sizes[-1] 
-        outsize = (int(insize[0] / layer[1][0]) , int(insize[1] / layer[1][1]))
+        insize = ds_stage_sizes[-1]
+        ds_copy_sizes.append((insize[0], insize[1], dsnchannel))
+        outsize = (int(insize[0] / layer[1][0]) , int(insize[1] / layer[1][1]), dsnchannel)
         ds_stage_sizes.append(outsize)
 
     sclbranch = modelspec[1]
-    scl_stage_sizes = [(1,1)]   # stage output sizes, 
+    scl_stage_sizes = [(1,1,scalar_input_nchannel)]   # stage output sizes,
+    sclnchannel = scalar_input_nchannel
     for stage in sclbranch:
         ## First layer must be an upsampling layer
         layer = stage[0]
-        chkxconv(layer, 'sclbranch')
+        chkxconv(layer, 'sclbranch') 
+        pcount += convnparam(layer, sclnchannel) # convnparam also calculates nparam for xposeconv
+        print('***layer param: {}'.format(convnparam(layer, sclnchannel)))
+        sclnchannel = layer[1]
+
         insize = scl_stage_sizes[-1]
-        outsize = (insize[0] * layer[3][0], insize[1] * layer[3][1])
+        outsize = (insize[0] * layer[3][0], insize[1] * layer[3][1], sclnchannel)
         scl_stage_sizes.append(outsize)
 
         ## remaining layers must be convolutions
         for layer in stage[1:]:
             chkconv(layer, 'sclbranch')
+            pcount += convnparam(layer, sclnchannel)
+            print('***layer param: {}'.format(convnparam(layer, sclnchannel)))
+            sclnchannel = layer[1]
 
     ## The output of the last stage of the scalar branch must be the
-    ## same size as that of the last downsampling stage.
-    if scl_stage_sizes[-1] != ds_stage_sizes[-1]:
+    ## same size as that of the last downsampling stage.  However, the
+    ## number of channels need not match.
+    if scl_stage_sizes[-1][0:2] != ds_stage_sizes[-1][0:2]:
         raise RuntimeError("Mismatch between dsbranch and sclbranch final sizes:  {} vs {}".format(ds_stage_sizes[-1], scl_stage_sizes[-1]))
 
     usbranch = modelspec[2]
     ds_stage_sizes.reverse()
+    ds_copy_sizes.reverse()
     us_stage_sizes = ds_stage_sizes[0:1]
+    usnchannel = sclnchannel + dsnchannel
+    dsidx = 0
+    print('ds_stage_sizes: {}'.format(ds_stage_sizes))
     for stage in usbranch:
         ## First layer must be upsampling layer
         layer = stage[0]
-        chkxconv(layer, 'usbranch')
+        chkxconv(layer, 'usbranch') 
+        pcount += convnparam(layer, usnchannel) # conv and xconv calculate nparam the same way
+        print('***layer param: {}'.format(convnparam(layer, usnchannel)))
+        usnchannel = layer[1]
+        
         insize = us_stage_sizes[-1]
-        outsize = (insize[0] * layer[3][0], insize[1] * layer[3][1])
+        outsize = (insize[0] * layer[3][0], insize[1] * layer[3][1], usnchannel)
         us_stage_sizes.append(outsize)
 
+        ## account for the additional channels added from the ds branch
+        print('\tU-bind accounting:  usnchannel= {}  dsnchannel= {}'.format(usnchannel, ds_copy_sizes[dsidx][2]))
+        usnchannel += ds_copy_sizes[dsidx][2]
+        dsidx += 1
+        
         ## remaining layers must be convolutions
         for layer in stage[1:]:
             chkconv(layer, 'usbranch')
+            pcount += convnparam(layer, usnchannel)
+            print('***layer param: {}'.format(convnparam(layer, usnchannel)))
+            print('\tusnchannel = {}'.format(usnchannel))
+            usnchannel = layer[1]
 
-    ## The sizes of all of the stages in the upsampling branch must be
-    ## the same as the corresponding stages in the downsampling
-    ## branch.
-    if us_stage_sizes != ds_stage_sizes:
-        raise RuntimeError("Mismatch in dsbranch and usbranch stage sizes.  sizes(dsbranch):  {}  sizes(usbranch):  {}".format(ds_stage_sizes, us_stage_sizes))
+    ## The image sizes of all of the stages in the upsampling branch
+    ## must be the same as the corresponding stages in the
+    ## downsampling branch. The numbers of channels don't have to
+    ## match.
+    for (usstage, dsstage) in zip(us_stage_sizes, ds_stage_sizes):
+        if usstage[0:2] != dsstage[0:2]:
+            raise RuntimeError("Mismatch in dsbranch and usbranch stage sizes.  sizes(dsbranch):  {}  sizes(usbranch):  {}".format(ds_stage_sizes, us_stage_sizes))
         
     ## Success.  Print some summary statistics.
     sys.stdout.write('Downsampling branch:\t{} stages\tfinal size: {}\n'.format(len(dsbranch), ds_stage_sizes[0]))
     sys.stdout.write('      Scalar branch:\t{} stages\tfinal size: {}\n'.format(len(sclbranch), scl_stage_sizes[-1]))
     sys.stdout.write('  Upsampling branch:\t{} stages\tfinal size: {}\n'.format(len(usbranch), us_stage_sizes[-1]))
-        
+    sys.stdout.write('\nTotal free parameters:\t{}'.format(pcount))
+
     
 def build_graph(modelspec, geodata):
     """
@@ -343,6 +382,28 @@ def chkintseq(seq, exlen):
     else: 
         return False
 
+
+def convnparam(layer, nchannel, bias=True):
+    """Calculate number of parameters in a convolutional or transpose convolutional layer
+
+    :param layer: (tuple) layer specification
+    :param nchannel: (int) Number of channels input to the layer
+    :param bias: (bool) Whether or not the layer includes a bias before the activation
+    :return: (int) number of parameters contributed by the layer
+
+    Convolutions and transpose convolutions calculate their number of
+    parameters the same way, so this function serves for both.
+
+    """
+
+    nfilt = layer[1]
+    (nx, ny) = layer[2]
+    np = nfilt*nx*ny*nchannel
+
+    if bias:
+        np += nfilt
+
+    return np
 
 
 #### TODO:
