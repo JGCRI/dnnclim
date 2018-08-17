@@ -70,7 +70,7 @@ for dset in climdata:
     	topo:  (192, 288, 2)
 
 
-## Verify data written to dump file
+### Verify data written to dump file
 
 
 ```python
@@ -84,26 +84,137 @@ infile.close()
 climdata['train'].keys()
 ```
 
-
-
-
     dict_keys(['fld', 'gmean'])
-
-
 
 
 ```python
 (climdata['train']['fld'] == climdata2['train']['fld']).all()
 ```
 
-
-
-
     True
-
-
 
 
 ```python
 
 ```
+
+## Example model run
+
+
+
+```python
+from dnnclim import model
+import pickle
+import time
+```
+
+### Set up a model specification
+
+This is a very simple network.  It only downsamples the geographical
+data once, and it doesn't have many convolutional layers (which are
+what gives this "deep" network most of its depth).  It's mainly
+intended to show how to set up a calculation.
+
+```python
+dsbranch = (
+    ( # stage 1
+        ('C', 10, (3,3)),
+        ('C', 10, (3,3)),
+        ('D', (2,3))
+    ),
+)
+
+sclbranch = (
+    ( # stage 1
+        ('U', 10, (3,3), (4,4)),
+        ('C', 10, (3,3))    
+    ),
+    ( # stage 2
+        ('U', 10, (3,3), (4,4)),
+    ),
+    ( # stage 3
+        ('U', 10, (3,3), (6,6)),
+    )
+)
+
+usbranch = (
+    ( # stage 1
+        ('U', 10, (3,3), (2,3)),
+        ('C', 2, (3,3))
+    ),
+)
+
+otherargs = {'learnrate':0.001}
+
+modelspec = [dsbranch, sclbranch, usbranch, otherargs]
+```
+
+
+### Load the data
+
+This data was prepared with the code from the first section.
+
+```python
+infile = open('dnnclim.dat','rb')
+dnnclim = pickle.load(infile)
+
+```
+
+### Run training iterations
+
+```python
+t1 = time.time()
+(loss, ckptfile) = model.runmodel(modelspec, dnnclim, epochs=100, savefile='./dnnclimsave')
+t2 = time.time()
+print('lowest loss value: {}'.format(loss))
+print('checkpoint file: {}'.format(ckptfile))
+print('run time: {}'.format(t2-t1))
+```
+
+    ***layer param: 370
+    	nchannel in= 4  nchannel out= 10
+    ***layer param: 910
+    	nchannel in= 10  nchannel out= 10
+    ***layer param: 190
+    ***layer param: 910
+    ***layer param: 910
+    ***layer param: 910
+    ds_stage_sizes: [(96, 96, 10), (192, 288, 4)]
+    ***layer param: 1810
+    	U-bind accounting:  usnchannel= 10  dsnchannel= 10
+    ***layer param: 362
+    	usnchannel = 20
+    Downsampling branch:	1 stages	final size: (96, 96, 10)
+          Scalar branch:	3 stages	final size: (96, 96, 10)
+      Upsampling branch:	1 stages	final size: (192, 288, 10)
+    
+    Total free parameters:	6372
+    Model checkpoint at epoch= 0, mean error= 34027.83933229004
+    Model checkpoint at epoch= 1, mean error= 32627.49295774648
+    Model checkpoint at epoch= 2, mean error= 31273.27282211789
+    Model checkpoint at epoch= 3, mean error= 29498.57276995305
+    Model checkpoint at epoch= 4, mean error= 26957.767344809596
+    Model checkpoint at epoch= 5, mean error= 24379.9186228482
+    Model checkpoint at epoch= 6, mean error= 22534.854460093895
+    Model checkpoint at epoch= 7, mean error= 21225.827856025036
+    Model checkpoint at epoch= 8, mean error= 20373.197704747
+    Model checkpoint at epoch= 9, mean error= 19423.651538862807
+    Model checkpoint at epoch= 10, mean error= 18504.18779342723
+	
+		(output from iterations 11-89 omitted)
+	
+    Model checkpoint at epoch= 90, mean error= 340.6464201877934
+    Model checkpoint at epoch= 91, mean error= 333.63967136150234
+    Model checkpoint at epoch= 92, mean error= 325.9314032342201
+    Model checkpoint at epoch= 93, mean error= 320.48474178403757
+    Model checkpoint at epoch= 94, mean error= 315.34419014084506
+    Model checkpoint at epoch= 95, mean error= 309.09112545644234
+    Model checkpoint at epoch= 96, mean error= 303.35009128847156
+    Model checkpoint at epoch= 97, mean error= 298.659070161711
+    Model checkpoint at epoch= 98, mean error= 293.6671231090245
+    Model checkpoint at epoch= 99, mean error= 288.3284428794992
+    lowest loss value: 2263964160.0
+    checkpoint file: ./dnnclimsave-99
+    run time: 1120.96351480484
+
+
