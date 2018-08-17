@@ -117,7 +117,7 @@ def validate_modelspec(modelspec):
     sys.stdout.write('Downsampling branch:\t{} stages\tfinal size: {}\n'.format(len(dsbranch), ds_stage_sizes[0]))
     sys.stdout.write('      Scalar branch:\t{} stages\tfinal size: {}\n'.format(len(sclbranch), scl_stage_sizes[-1]))
     sys.stdout.write('  Upsampling branch:\t{} stages\tfinal size: {}\n'.format(len(usbranch), us_stage_sizes[-1]))
-    sys.stdout.write('\nTotal free parameters:\t{}'.format(pcount))
+    sys.stdout.write('\nTotal free parameters:\t{}\n'.format(pcount))
 
     
 def build_graph(modelspec, geodata):
@@ -285,7 +285,7 @@ def bcast_case(tensorin, ncase):
     return tensorin + tf.zeros(newshape)
 
 
-def runmodel(modelspec, climdata, savefile=None):
+def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
     """Train and evaluate a model.
 
     :param modelspec: A model specification structure
@@ -298,21 +298,65 @@ def runmodel(modelspec, climdata, savefile=None):
 
     (scalarin, groundtruth, output, loss, train_step) = build_graph(modelspec, climdata['geo'])
 
+    if savefile is not None:
+        ckptr = tf.train.Saver()
+        epochckpt = -1          # epoch when the model was last checkpointed
+        ## factor to convert total error to mean error per grid cell.
+        normfac = 1.0/np.prod(climdata['dev']['fld'].shape)
+    
     with tf.Session() as sess:
-        if savefile is not None:
-            saver = tf.train.Saver()
         summarywriter = tf.summary.FileWriter('logs', sess.graph)
 
         init = tf.global_variables_initializer()
         sess.run(fetches=[init])
 
-        fd={scalarin:climdata['train']['gmean'],
-            groundtruth:climdata['train']['fld']}
-        (lossval,) = sess.run(fetches=[loss], feed_dict=fd)
+        ## pull the training set.  'x' is the input (global means,
+        ## time, etc), and 'y' is the output (the fields produced by
+        ## the ESMs).  The geo data was set up as constants when we
+        ## built the graph.
+        train_x = climdata['train']['gmean']
+        train_y = climdata['train']['fld']
+        ntrain = train_x.shape[0]
+
+        ## pull the dev set.  We'll use that to monitor our progress.
+        dev_x = climdata['dev']['gmean']
+        dev_y = climdata['dev']['fld']
+        min_loss = np.inf
+        
+        for epoch in range(epochs):
+            ## shuffle the data once per epoch
+            idx = np.random.permutation(ntrain)
+            train_x = train_x[idx,:]
+            train_y = train_y[idx,:]
+
+            ## run each minibatch
+            for update in range(int(np.floor(ntrain/batchsize))):
+                mbidx = np.arange(update * batchsize, (update+1) * batchsize)
+                mb_x = train_x[mbidx,:]
+                mb_y = train_y[mbidx,:]
+
+                fd={scalarin:mb_x, groundtruth:mb_y}
+                (_,lossval) = sess.run(fetches=[train_step, loss], feed_dict=fd)
+
+            ## at the end of each epoch, evaluate on the dev set.  If
+            ## we've improved on the previous best value, record the
+            ## model in a checkpoint.
+            fd={scalarin:dev_x, groundtruth:dev_y}
+            [lossval] = sess.run(fetches=[loss], feed_dict=fd)
+            if lossval < min_loss:
+                min_loss = lossval
+                if savefile is not None:
+                    ckptr.save(sess, savefile, global_step=epoch)
+                    epochckpt = epoch
+                    lossnorm = lossval*normfac
+                    sys.stdout.write('Model checkpoint at epoch= {}, mean error= {}\n'.format(epoch,lossnorm))
 
 
-
-        return (lossval, None)
+    if savefile is not None:
+        saveout = '{}-{}'.format(savefile, epochckpt)
+    else:
+        saveout = None
+    return (lossval, saveout)
 
 
 #### Helper functions
