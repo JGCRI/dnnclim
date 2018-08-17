@@ -81,13 +81,15 @@ def validate_modelspec(modelspec):
     sys.stdout.write('  Upsampling branch:\t{} stages\tfinal size: {}\n'.format(len(usbranch), us_stage_sizes[-1]))
         
     
-def build_graph(modelspec):
+def build_graph(modelspec, geodata):
     """
     Given a model specification, build the tensorflow graph for that model
 
     :param modelspec: A model specification, as described in the documentation.
+    :param geodata: Numpy array of geographical data shape = (nlat, nlon, 4).  The 4 channels are
+                    lat, lon, elevation, and land fraction.
     :return: (tuple of tensors): 
-             topo input, scalar input, ground truth input, model output, loss, training stepper
+             scalar input, ground truth input, model output, loss, training stepper
 
     """
 
@@ -95,21 +97,23 @@ def build_graph(modelspec):
 
     tf.reset_default_graph()
 
+    ## geographical data.  This is a constant.
+    with tf.variable_scope('geodata'):
+        geoin = tf.constant(geodata, dtype=tf.float32, shape=geodata.shape, name='geodata') 
+        ## create a list to hold the inputs to each stage of the downsampling branch
+        ds_stage_inputs = [tf.expand_dims(geoin, axis=0)]
+    
     with tf.variable_scope('input'):
-        ## topo data.  This is the same for all cases.
-        geoin = tf.placeholder(dtype=tf.float32, shape=(192,288,4), name='geo')
         ## scalar inputs, such as global mean temperature, time, etc.
         scalarin = tf.placeholder(dtype=tf.float32, shape=(None, scalar_input_nchannel),
                                   name='scalars')
 
         ## Convert scalars to a 1x1 array
-        scalars = tf.expand_dims(tf.expand_dims(scalarin, axis=1), axis=2)
-
-        ## create a list to hold the inputs to each stage of each branch.
-        ds_stage_inputs = [tf.expand_dims(geoin, axis=0)]
+        scalars = tf.expand_dims(tf.expand_dims(scalarin, axis=1), axis=2) 
+        ## create a list to hold the inputs to each stage of the scalar upsampling branch
         scalar_stage_inputs = [scalars]
 
-        ## Find out how many cases we have.  This will be needed to broadcast the topo data.
+        ## Find out how many cases we have.  This will be needed to broadcast the geo data.
         ncase = tf.shape(scalarin)[0]
 
     with tf.variable_scope('groundtruth'):
@@ -234,7 +238,7 @@ def build_graph(modelspec):
 
     train_step = tf.train.AdamOptimizer(otherargs['learnrate']).minimize(loss, name='train_step')
 
-    return(geoin, scalarin, groundtruth, output, loss, train_step)
+    return(scalarin, groundtruth, output, loss, train_step)
 
 def bcast_case(tensorin, ncase):
     """Broadcast case-independent tensor to be compatible with case-dependent tensors."""
@@ -253,7 +257,7 @@ def runmodel(modelspec, climdata, savefile=None):
 
     """
 
-    (geoin, scalarin, groundtruth, output, loss, train_step) = build_graph(modelspec)
+    (scalarin, groundtruth, output, loss, train_step) = build_graph(modelspec, climdata['geo'])
 
     with tf.Session() as sess:
         if savefile is not None:
@@ -263,8 +267,7 @@ def runmodel(modelspec, climdata, savefile=None):
         init = tf.global_variables_initializer()
         sess.run(fetches=[init])
 
-        fd={geoin:climdata['geo'],
-            scalarin:climdata['train']['gmean'],
+        fd={scalarin:climdata['train']['gmean'],
             groundtruth:climdata['train']['fld']}
         (lossval,) = sess.run(fetches=[loss], feed_dict=fd)
 
