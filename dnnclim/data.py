@@ -11,7 +11,7 @@ import os.path
 import sys
 import pickle
 
-def readncfiles(ncfiles, varname, fldname=None, datain=None,
+def readncfiles(ncfiles, varname, fldname=None, datain=None, coordin=None,
                 latdim='lat', londim='lon', timedim='time'):
     """Read data from a list of netCDF files.
     
@@ -24,8 +24,8 @@ def readncfiles(ncfiles, varname, fldname=None, datain=None,
     :param latdim: (string) name of the latitude dimension in the input files (default: 'lat')
     :param londim: (string) name of the longitude dimension in the input files (default: 'lon')
     :param timedim: (string) name of the time dimension in the input files (default: 'time')
-    :return: Dictionary of data read from the input files.  See below for the format of 
-                the structure.
+    :return: (tuple) (Dictionary of scenario data read from the input files, Dictionary of coordinate data)
+                See below for the format of the structures.
 
     This function will read a single field from each file in the input file
     list.  The arrays will be placed into a nested dictionary indexed by
@@ -39,10 +39,16 @@ def readncfiles(ncfiles, varname, fldname=None, datain=None,
     scheme allows us to match up the data from different files (i.e., for
     different variables) by scenario.
 
-    We are assuming here that all of the fields we read in have the same
-    coordinates.  Since we don't store the coordinate variables, there is no way
-    of checking this; however, if all of the input files come from the same ESM,
-    this assumption should be valid.
+    Coordinates are stored in a dictionary containing 'lat', 'lon',
+    and 'time'.  Note that the output always has these names, even if
+    they were called something different in the input (specified in
+    the latdim, etc. arguments).  Coordinates must be the same across
+    all input data.  This is checked when the coordinates are read in
+    from each input file.
+
+    TODO: If we want to use the preindustrial control runs (or the
+    historical runs, for that matter), then we may have to think a bit
+    on how to handle the time predictor.
 
     """
 
@@ -51,6 +57,11 @@ def readncfiles(ncfiles, varname, fldname=None, datain=None,
     else:
         rslt = datain
 
+    if coordin is None:
+        coord = {}
+    else:
+        coord = coordin
+        
     if fldname is None:
         fldname = varname
 
@@ -73,7 +84,41 @@ def readncfiles(ncfiles, varname, fldname=None, datain=None,
         ## the same ESM.
         rslt[scenid][varname] = data
 
-    return rslt
+        ## We also need the grid coordinates.  These are stored in
+        ## each file, but we only need them once, so we grab them from
+        ## the first file we process, and thereafter we just check for
+        ## consistency.
+
+        ## It's not clear that this sin transformation is doing
+        ## anything useful, but having values in [-1,1] feels better
+        ## to me, and it provides symmetry with the lon coordinate
+        lat = np.sin(np.radians(np.array(ncdata.variables[latdim])))
+        ## The cos transformation for lon isn't perfect; I'm trying to
+        ## capture the fact that lon of 0 and lon of 360 are actually
+        ## the same point; however, using this transformation also
+        ## identifies lon of 90 and lon of 270 as the same point,
+        ## which they definitely are not.  There is no good way around
+        ## this; any function that is periodic over the full longitude
+        ## range will necessarily take on the same value more than
+        ## once somewhere in its domain.  Maybe we should just abandon
+        ## lon as a predictor?
+        lon = np.cos(np.radians(np.array(ncdata.variables[londim])))
+
+
+        time = np.array(ncdata.variables[timedim])
+        if 'lat' in coord:
+            ## coordinates already exist; check for consistency
+            for (new, var) in zip((lat, lon, time), ('lat', 'lon', 'time')):
+                old = coord[var]
+                diff = np.fabs(new-old)
+                if any(diff > 1e-6):
+                    raise RuntimeError('discrepancy in input data for coordinate: {}'.format(var))
+        else:
+            coord['lat'] = lat
+            coord['lon'] = lon
+            coord['time'] = time
+
+    return (rslt, coord)
 
 def readglobmeans(datain, datadir = '.', fntemplate='{}_Amon_{}_{}_{}_200601-210012.nc_gavg.txt'):
     """
@@ -95,6 +140,9 @@ def readglobmeans(datain, datadir = '.', fntemplate='{}_Amon_{}_{}_{}_200601-210
 
     rslt = {}
     for scenario in datain.keys():
+        if scenario == 'coord':
+            ## coordinate variables, not a real scenario
+            continue
         rslt[scenario] = {} 
         (modelid, exptid, rip) = scenario.split('.')
 
@@ -205,15 +253,18 @@ def chkdata(esmvars, globmeans, topo, monthly=True):
     return None
 
 
-def annualavg(esmvars, globmeans):
+def annualavg(esmvars, globmeans, coord):
     """Compute annual means from monthly data.
 
     :param esmvars: ESM output fields from readncfiles
     :param globmeans: Global means from readglobmeans
-    :return: tuple (esmfld, gmean) of annually averaged fields and global means
+    :return: tuple (esmfld, gmean, coord) of annually averaged fields, global means, and coordinates
 
-    The structures returned will be indexed by scenario and variable, just as
-    the input structures were.
+    The field and global structures returned will be indexed by
+    scenario and variable, just as the input structures were.  For the
+    coordinates structure, only the time variable changes, but
+    latitude and longitude are still copied over.
+
     """
 
     scens = list(esmvars.keys())
@@ -226,6 +277,7 @@ def annualavg(esmvars, globmeans):
     
     esmfld = {}
     gmean = {}
+    newcoord = {}
 
     months = np.array(range(12)) # month indexes
 
@@ -248,16 +300,28 @@ def annualavg(esmvars, globmeans):
             esmfld[scen][var] = outfld
             gmean[scen][var] = outmean
 
-    return (esmfld, gmean)
+    ## compute the time coordinate for the averaged data.
+    ## check for consistency with global mean data
+    nyearcoord = int(coord['time'].shape[0] / 12.0)
+    if nyearcoord != nyear:
+        raise RuntimeError('Inconsistent nyear: field data= {}  time coord= {}'.format(nyear, nyearcoord))
+    startyear = np.floor(coord['time'][0] / 365.0) # original coordinate is in days since 2006-01-01
+    stopyear = startyear + nyear
+    newcoord['time'] = np.arange(startyear, stopyear)
+    newcoord['lat'] = coord['lat']
+    newcoord['lon'] = coord['lon']
+
+    return (esmfld, gmean, newcoord)
 
 
     
-def preparedata(esmvars, globmeans, topo, trainfrac=0.5, devfrac=0.25):
+def preparedata(esmvars, globmeans, topo, coord, trainfrac=0.5, devfrac=0.25):
     """Separate data into test, training, and dev sets, and organize into a single structure.
 
     :param esmvars: dictionary of ESM outputs returned by readncfiles
     :param globmeans: dictionary of globally averaged ESM variables returned by readglobmeans
     :param topo: dictionary of topographic data returned by readtopo
+    :param coord: dictionary of grid coordinate data
     :param trainfrac: fraction of the data to include in the training set
     :param devfrac: fraction of the data to include in the dev set
 
@@ -266,18 +330,27 @@ def preparedata(esmvars, globmeans, topo, trainfrac=0.5, devfrac=0.25):
     corresponding order).  These data are randomly split into
     training, dev, and test sets.  All of this is compiled into a
     single structure that is indexed by set (train/dev/test) and data
-    type (fld/gmean).  For both the fields and the means, the two
-    variables (temperature and precipitation) are stacked into a
-    single array.  For example, rslt['dev']['gmean'][:,0] gives the
-    global mean temperature values for the dev set,
-    rslt['train']['fld'][:,1] gives the precipitation field for the
-    training set.  (Note that we store global mean precip even though
-    we don't currently use it for anything in the model.)
+    type (fld/gmean).  For the fields, the two variables (temperature
+    and precipitation) are stacked into a single array, with one
+    variable in each channel.  For the global means, the precipitation
+    is discarded, and the time coordinate is stacked with the mean
+    temperature.  (We should really call this something like "scalar
+    predictors" instead of "global means", but the latter is the name
+    we originally went with, and it has stuck.)
 
-    The topo data is constant across all cases; therefore, it is not
-    split into train/dev/test sets.  The two 2-d topo fields are
-    stacked into a single two-channel field (landfrac, elevation) and
-    stored as rslt['topo'].
+
+    For example, rslt['dev']['gmean'][:,0] gives the global mean
+    temperature values for the dev set, while
+    rslt['dev']['gmean'][:,1] gives the time of the observation (in
+    years since 2006).  Similarly, rslt['train']['fld'][:,1] gives the
+    precipitation field for the training set, and the corresponding
+    temperature field is in rslt['train']['fld'][:,0].
+
+    The geographical data is constant across all cases; therefore, it
+    is not split into train/dev/test sets.  The latitude and longitude
+    are expanded to the full grid, and they are stacked with the two
+    2-d topo fields.  The result is a single four-channel field (lat,
+    lon, landfrac, elevation) that is stored as rslt['geo'].
 
     """
 
@@ -287,7 +360,7 @@ def preparedata(esmvars, globmeans, topo, trainfrac=0.5, devfrac=0.25):
     
     for scen in esmvars: 
         field = np.stack([esmvars[scen]['tas'], esmvars[scen]['pr']], axis=1) # result is nt x 2 x nlat x nlon
-        gmean = np.stack([globmeans[scen]['tas'], globmeans[scen]['pr']], axis=1) # result is nt x 2
+        gmean = np.stack([globmeans[scen]['tas'], coord['time']], axis=1) # result is nt x 2.  Assuming all scenarios are the same length.
 
         fields.append(field)
         gmeans.append(gmean)
@@ -299,9 +372,6 @@ def preparedata(esmvars, globmeans, topo, trainfrac=0.5, devfrac=0.25):
                              axes=[0,2,3,1]) # result is (nscen*nt) x nlat x nlon x 2
     allgmeans = np.concatenate(gmeans)       # result is (nscen*nt) x 2
 
-    ## Conventionally, tensorflow puts channels in the last dimension.
-    ## Transpose the arrays to conform.
-    
 
     nscen = len(esmvars)
     dim = esmvars[next(iter(esmvars))]['tas'].shape
@@ -317,7 +387,7 @@ def preparedata(esmvars, globmeans, topo, trainfrac=0.5, devfrac=0.25):
     if not(trainfrac > 0 and trainfrac < 1 and
            devfrac > 0 and devfrac < 1 and
            testfrac > 0 and testfrac < 1):
-        raise 'trainfrac, devfrac, and testfrac must all be between 0 and 1'
+        raise RuntimeError('trainfrac, devfrac, and testfrac must all be between 0 and 1')
     
     ncase = allfields.shape[0]
     itrain = int(np.round(trainfrac*ncase))
@@ -348,11 +418,23 @@ def preparedata(esmvars, globmeans, topo, trainfrac=0.5, devfrac=0.25):
     rslt['test']['fld'] = allfields[idxtest,]
     rslt['test']['gmean'] = allgmeans[idxtest,]
 
-    ## add in the topo fields.  Stack them with the two channels in the last dimension
-    rslt['topo'] = np.stack([topo['sftlf'], topo['orog']], axis=-1)
-    
 
-    sys.stdout.write('topo dim:  {}\n'.format(rslt['topo'].shape))
+    ## Broadcast the lat and lon coordinates into fields compatible
+    ## with the topo data.  We could instead let tensorflow handle
+    ## this process, passing the coordinates in as 1d arrays and using
+    ## tensorflow operations to do the broadcasting, but the
+    ## broadcasting operations in tensorflow are a little clunky, so I
+    ## prefer to do it here.
+    lat = np.expand_dims(coord['lat'], axis=1) # conceptually, lat is a 192 x 1 array
+    lon = np.expand_dims(coord['lon'], axis=0) # and lon is a 1 x 288 array
+
+    latfld = np.broadcast_to(lat, topo['sftlf'].shape)
+    lonfld = np.broadcast_to(lon, topo['sftlf'].shape)
+    
+    ## add in the geo fields.  Stack them with the two channels in the last dimension
+    rslt['geo'] = np.stack([latfld, lonfld, topo['sftlf'], topo['orog']], axis=-1)
+
+    sys.stdout.write('geo dim:  {}\n'.format(latfld.shape))
     
     return rslt
 
@@ -382,6 +464,8 @@ def process_dir(inputdir,
 
     """
     import glob
+
+    np.random.seed(seed)
     
     def getfilenames(g, unique=False):
         fg = os.path.join(inputdir, g)
@@ -402,8 +486,8 @@ def process_dir(inputdir,
     print('prfiles : ', prfiles)
     print('topofiles : ', topofiles)
 
-    flds = readncfiles(tempfiles, 'tas')
-    flds = readncfiles(prfiles, 'pr', datain=flds) # add precip data to previous
+    (flds, coords) = readncfiles(tempfiles, 'tas')
+    (flds, coords) = readncfiles(prfiles, 'pr', datain=flds, coordin=coords) # add precip data to previous
 
     gmeans = readglobmeans(flds, inputdir)
 
@@ -411,9 +495,9 @@ def process_dir(inputdir,
 
     chkdata(flds, gmeans, topo)
 
-    (flds, gmeans) = annualavg(flds, gmeans)
+    (flds, gmeans, coords) = annualavg(flds, gmeans, coords)
 
-    rslt = preparedata(flds, gmeans, topo)
+    rslt = preparedata(flds, gmeans, topo, coords)
 
     
     if outfile is not None:

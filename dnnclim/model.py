@@ -97,7 +97,7 @@ def build_graph(modelspec):
 
     with tf.variable_scope('input'):
         ## topo data.  This is the same for all cases.
-        topoin = tf.placeholder(dtype=tf.float32, shape=(192,288,2), name='topo')
+        geoin = tf.placeholder(dtype=tf.float32, shape=(192,288,4), name='geo')
         ## scalar inputs, such as global mean temperature, time, etc.
         scalarin = tf.placeholder(dtype=tf.float32, shape=(None, scalar_input_nchannel),
                                   name='scalars')
@@ -106,7 +106,7 @@ def build_graph(modelspec):
         scalars = tf.expand_dims(tf.expand_dims(scalarin, axis=1), axis=2)
 
         ## create a list to hold the inputs to each stage of each branch.
-        ds_stage_inputs = [tf.expand_dims(topoin, axis=0)]
+        ds_stage_inputs = [tf.expand_dims(geoin, axis=0)]
         scalar_stage_inputs = [scalars]
 
         ## Find out how many cases we have.  This will be needed to broadcast the topo data.
@@ -234,7 +234,7 @@ def build_graph(modelspec):
 
     train_step = tf.train.AdamOptimizer(otherargs['learnrate']).minimize(loss, name='train_step')
 
-    return(topoin, scalarin, groundtruth, output, loss, train_step)
+    return(geoin, scalarin, groundtruth, output, loss, train_step)
 
 def bcast_case(tensorin, ncase):
     """Broadcast case-independent tensor to be compatible with case-dependent tensors."""
@@ -253,7 +253,7 @@ def runmodel(modelspec, climdata, savefile=None):
 
     """
 
-    (topoin, scalarin, groundtruth, output, loss, train_step) = build_graph(modelspec)
+    (geoin, scalarin, groundtruth, output, loss, train_step) = build_graph(modelspec)
 
     with tf.Session() as sess:
         if savefile is not None:
@@ -263,7 +263,7 @@ def runmodel(modelspec, climdata, savefile=None):
         init = tf.global_variables_initializer()
         sess.run(fetches=[init])
 
-        fd={topoin:climdata['topo'],
+        fd={geoin:climdata['geo'],
             scalarin:climdata['train']['gmean'],
             groundtruth:climdata['train']['fld']}
         (lossval,) = sess.run(fetches=[loss], feed_dict=fd)
@@ -339,3 +339,9 @@ def chkintseq(seq, exlen):
         return True
     else: 
         return False
+
+
+
+#### TODO:
+####   Calculate number of parameters
+####   Add geographic coords as inputs.
