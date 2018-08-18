@@ -16,11 +16,21 @@ import sys
 ## Number of channels in the scalar input.  Currently just Tg and t.
 scalar_input_nchannel = 2
 geo_input_nchannel = 4
+geo_input_imgsize = (192,288)
 
 def validate_modelspec(modelspec):
+    """Check to see that a model specification meets all of the, and count number of parameters.
+
+    :param modelspec: A model specification structure
+    :return: number of parameters in the model
+
+    """
+
     if len(modelspec) != 4:
         raise RuntimeError('validate_modelspec: expected length = 4, found length = {}'.format(len(modelspec)))
 
+    chkotherargs(modelspec[3]) 
+    
     pcount = 0                  # running count of free parameters
     
     ## Check the content of each branch
@@ -119,6 +129,8 @@ def validate_modelspec(modelspec):
     sys.stdout.write('  Upsampling branch:\t{} stages\tfinal size: {}\n'.format(len(usbranch), us_stage_sizes[-1]))
     sys.stdout.write('\nTotal free parameters:\t{}\n'.format(pcount))
 
+    return pcount
+
     
 def build_graph(modelspec, geodata):
     """
@@ -128,14 +140,37 @@ def build_graph(modelspec, geodata):
     :param geodata: Numpy array of geographical data shape = (nlat, nlon, 4).  The 4 channels are
                     lat, lon, elevation, and land fraction.
     :return: (tuple of tensors): 
-             scalar input, ground truth input, model output, loss, training stepper
+             scalar input, ground truth input, model output, loss, regularization penalty, 
+             training stepper
+
+    The value returned as "loss" is just the discrepancy measure between the ground truth 
+    and the model predictions.  The quantity being optimized is the "total loss", which is
+    the sum of the loss and the regularization penalty.
 
     """
 
-    validate_modelspec(modelspec)
+    nparam = validate_modelspec(modelspec)
 
     tf.reset_default_graph()
 
+    ## select regularization to add to the layers.
+    regspec = modelspec[3]['regularization']
+    ## Rescale the regularization scale by the ratio of image size to
+    ## number of parameters.  This helps ensure that the amount of
+    ## regularization required to make a meaningful contribution to
+    ## the total loss is not so sensitive to the number of parameters.
+    ## Our calculation of the number of parameters isn't perfect for
+    ## this purpose, since it includes the bias values, which aren't
+    ## being regularized, but it should be close enough.
+    regscl = regspec[1] * np.prod(geodata.shape) / nparam
+    print('regscl = {}'.format(regscl))
+    if regspec[0] == 'L1':
+        reg = lambda: tf.contrib.layers.l1_regularizer(regscl)
+    elif regspec[0] == 'L2':
+        reg = lambda: tf.contrib.layers.l2_regularizer(regscl)
+    else:
+        reg = lambda: None
+        
     ## geographical data.  This is a constant.
     with tf.variable_scope('geodata'):
         geoin = tf.constant(geodata, dtype=tf.float32, shape=geodata.shape, name='geodata') 
@@ -173,7 +208,7 @@ def build_graph(modelspec, geodata):
             for layer in stage:
                 if layer[0] == 'C':
                     ## convolution layer: output of the convolution is the input for the next layer.
-                    layerin = mk_convlayer(layer, layerin)
+                    layerin = mk_convlayer(layer, layerin, reg)
                 elif layer[0] == 'D':
                     ## This is the end of the stage.  Add the layer's
                     ## input to the stage output (remember, they are
@@ -206,9 +241,9 @@ def build_graph(modelspec, geodata):
             for layer in stage:
                 if layer[0] == 'U':
                     ## Upsample with transpose convolution. Output is input for next layer
-                    layerin = mk_xconvlayer(layer, layerin)
+                    layerin = mk_xconvlayer(layer, layerin, reg)
                 elif layer[0] == 'C':
-                    layerin = mk_convlayer(layer, layerin)
+                    layerin = mk_convlayer(layer, layerin, reg)
                 else:
                     ## should't be able to get here
                     raise RuntimeError("Invalid modelspec slipped through somehow.")
@@ -239,7 +274,7 @@ def build_graph(modelspec, geodata):
                 if layer[0] == 'U':
                     ## Upsample.  Then bind the last tensor from the
                     ## corresponding stage of the downsampling branch.
-                    upsamp = mk_xconvlayer(layer, layerin) 
+                    upsamp = mk_xconvlayer(layer, layerin, reg) 
                     bindlayer = ds_stage_outputs[ds_stage_idx]
                     ds_stage_idx += 1
 
@@ -250,7 +285,7 @@ def build_graph(modelspec, geodata):
                     layerin = tf.concat([bindlayer, upsamp], axis=3, name='join_U_branch')
                     # layerin = upsamp
                 elif layer[0] == 'C':
-                    layerin = mk_convlayer(layer, layerin)
+                    layerin = mk_convlayer(layer, layerin, reg)
                 else:
                     ## should be able to get here
                     raise RuntimeError("Invalid modelspec slipped through somehow")
@@ -274,10 +309,12 @@ def build_graph(modelspec, geodata):
         tf.assert_equal(tf.shape(groundtruth),
                         tf.shape(output))
         loss = tf.reduce_sum(tf.squared_difference(output, groundtruth))
+        reg_pen = tf.losses.get_regularization_loss()
+        total_loss = loss + reg_pen
 
-    train_step = tf.train.AdamOptimizer(otherargs['learnrate']).minimize(loss, name='train_step')
+    train_step = tf.train.AdamOptimizer(otherargs['learnrate']).minimize(total_loss, name='train_step')
 
-    return(scalarin, groundtruth, output, loss, train_step)
+    return(scalarin, groundtruth, output, loss, reg_pen, train_step)
 
 def bcast_case(tensorin, ncase):
     """Broadcast case-independent tensor to be compatible with case-dependent tensors."""
@@ -296,7 +333,8 @@ def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
 
     """
 
-    (scalarin, groundtruth, output, loss, train_step) = build_graph(modelspec, climdata['geo'])
+    (scalarin, groundtruth, output,
+     loss, reg_pen, train_step) = build_graph(modelspec, climdata['geo'])
 
     if savefile is not None:
         ckptr = tf.train.Saver()
@@ -342,14 +380,15 @@ def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
             ## we've improved on the previous best value, record the
             ## model in a checkpoint.
             fd={scalarin:dev_x, groundtruth:dev_y}
-            [lossval] = sess.run(fetches=[loss], feed_dict=fd)
+            [lossval, regval] = sess.run(fetches=[loss, reg_pen], feed_dict=fd)
             if lossval < min_loss:
                 min_loss = lossval
                 if savefile is not None:
                     ckptr.save(sess, savefile, global_step=epoch)
                     epochckpt = epoch
-                    lossnorm = lossval*normfac
-                    sys.stdout.write('Model checkpoint at epoch= {}, mean error= {}\n'.format(epoch,lossnorm))
+                    lossnorm = lossval * normfac
+                    regnorm = regval * normfac
+                    sys.stdout.write('Model checkpoint at epoch= {}, mean squared error= {},  regval= {}\n'.format(epoch,lossnorm, regnorm))
 
 
     if savefile is not None:
@@ -361,13 +400,14 @@ def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
 
 #### Helper functions
 
-def mk_convlayer(spec, layerin):
+def mk_convlayer(spec, layerin, mkreg):
     """Make a convolutional layer from its specification"""
     
     nfilt = spec[1]
     dimfilt = spec[2]
     return tf.layers.conv2d(layerin, nfilt, dimfilt,
-                            padding='SAME', activation=tf.nn.relu)
+                            padding='SAME', activation=tf.nn.relu,
+                            kernel_regularizer=mkreg())
 
 
 def mk_downsamplelayer(spec, layerin):
@@ -378,12 +418,13 @@ def mk_downsamplelayer(spec, layerin):
                                    padding='SAME')
 
 
-def mk_xconvlayer(spec, layerin):
+def mk_xconvlayer(spec, layerin, mkreg):
     nfilt = spec[1]
     dimfilt = spec[2]
     stride = spec[3]
     return tf.layers.conv2d_transpose(layerin, nfilt, dimfilt, stride,
-                                      padding='SAME', activation=tf.nn.relu)
+                                      padding='SAME', activation=tf.nn.relu,
+                                      kernel_regularizer=mkreg())
     
 
 def chkconv(layer, brname):
@@ -427,6 +468,30 @@ def chkintseq(seq, exlen):
         return False
 
 
+def chkotherargs(otherargs):
+    """Check that the otherargs section of the model spec is valid
+
+    This section must be a dictionary containing the following entries:
+        * learnrate: float > 0
+        * regularization: tuple (type, scale).  Type is 'L1', 'L2', or 'N' (for none).
+                          Scale is float > 0.
+    """
+
+    if 'learnrate' not in otherargs:
+        raise RuntimeError('Config must supply learning rate.')
+    elif otherargs['learnrate'] <= 0:
+        raise ValueError('learnrate must be > 0.')
+
+    if 'regularization' not in otherargs:
+        raise RuntimeError('Config must specify regularization type and scale.')
+
+    reg = otherargs['regularization']
+    if reg[0] not in ('L1', 'L2', 'N'):
+        raise ValueError('Invalid regularization type. Valid types are L1, L2, N. Found {}'.format(reg[0]))
+    elif reg[1] < 0:
+        raise ValueError('Regularization scale must be >= 0.  Found {}'.format(reg[1]))
+
+    
 def convnparam(layer, nchannel, bias=True):
     """Calculate number of parameters in a convolutional or transpose convolutional layer
 
