@@ -18,6 +18,15 @@ scalar_input_nchannel = 2
 geo_input_nchannel = 4
 geo_input_imgsize = (192,288)
 
+## We use a quasipoisson likelihood function for precipitation.  In
+## order for this to be remotely valid, precip must be scaled so that
+## its variance is equal (more or less) to its mean.  This factor
+## scales the precip field so that the likely model-specified scale
+## factor should be close to 1.  It is calculated as the median over
+## all grid cells in the training set of the ratio of the per-cell
+## variance to the per-cell mean.
+precip_intrinsic_scale = 4e-7
+
 def validate_modelspec(modelspec):
     """Check to see that a model specification meets all of the, and count number of parameters.
 
@@ -140,12 +149,12 @@ def build_graph(modelspec, geodata):
     :param geodata: Numpy array of geographical data shape = (nlat, nlon, 4).  The 4 channels are
                     lat, lon, elevation, and land fraction.
     :return: (tuple of tensors): 
-             scalar input, ground truth input, model output, loss, regularization penalty, 
-             training stepper
+             scalar input, ground truth input, model output, temperature loss, precip loss,
+             regularization penalty, total_loss, training stepper
 
-    The value returned as "loss" is just the discrepancy measure between the ground truth 
-    and the model predictions.  The quantity being optimized is the "total loss", which is
-    the sum of the loss and the regularization penalty.
+    The temperature and precipitation losses are the measures of discrepancy for the 
+    temperature and precipitation variables.  The quantity being optimized is the 
+    "total loss", which is the sum of the two, plus the regularization penalty.
 
     """
 
@@ -308,13 +317,14 @@ def build_graph(modelspec, geodata):
     with tf.variable_scope('loss_calculation'):
         tf.assert_equal(tf.shape(groundtruth),
                         tf.shape(output))
-        loss = tf.reduce_sum(tf.squared_difference(output, groundtruth))
+        (temploss, preciploss) = mk_losscalc(groundtruth, output, otherargs)
+        loss = temploss + preciploss
         reg_pen = tf.losses.get_regularization_loss()
         total_loss = loss + reg_pen
 
     train_step = tf.train.AdamOptimizer(otherargs['learnrate']).minimize(total_loss, name='train_step')
 
-    return(scalarin, groundtruth, output, loss, reg_pen, train_step)
+    return(scalarin, groundtruth, output, temploss, preciploss, reg_pen, total_loss, train_step)
 
 def bcast_case(tensorin, ncase):
     """Broadcast case-independent tensor to be compatible with case-dependent tensors."""
@@ -333,14 +343,17 @@ def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
 
     """
 
-    (scalarin, groundtruth, output,
-     loss, reg_pen, train_step) = build_graph(modelspec, climdata['geo'])
+    (scalarin, groundtruth, output, temploss, preciploss,
+     reg_pen, total_loss, train_step) = build_graph(modelspec, climdata['geo'])
 
     if savefile is not None:
         ckptr = tf.train.Saver()
         epochckpt = -1          # epoch when the model was last checkpointed
         ## factor to convert total error to mean error per grid cell.
-        normfac = 1.0/np.prod(climdata['dev']['fld'].shape)
+        fldsize = climdata['dev']['fld'].shape
+        normfac = 2.0/np.prod(fldsize) # factor of 2 because we want
+                                       # to normalize each of the 2
+                                       # fields separately.
     
     with tf.Session() as sess:
         summarywriter = tf.summary.FileWriter('logs', sess.graph)
@@ -374,33 +387,138 @@ def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
                 mb_y = train_y[mbidx,:]
 
                 fd={scalarin:mb_x, groundtruth:mb_y}
-                (_,lossval) = sess.run(fetches=[train_step, loss], feed_dict=fd)
+                (_,) = sess.run(fetches=[train_step], feed_dict=fd)
 
             ## at the end of each epoch, evaluate on the dev set.  If
             ## we've improved on the previous best value, record the
             ## model in a checkpoint.
             fd={scalarin:dev_x, groundtruth:dev_y}
-            [lossval, regval] = sess.run(fetches=[loss, reg_pen], feed_dict=fd)
-            if lossval < min_loss:
-                min_loss = lossval
+            fetch = [temploss, preciploss, total_loss, reg_pen]
+            (ltemp, lprecip, ltot, regval) = sess.run(fetches=fetch, feed_dict=fd)
+            if ltot < min_loss:
+                min_loss = ltot
                 if savefile is not None:
                     ckptr.save(sess, savefile, global_step=epoch)
                     epochckpt = epoch
-                    lossnorm = lossval * normfac
+                    tempnorm = ltemp * normfac
+                    precipnorm = lprecip * normfac
                     regnorm = regval * normfac
-                    sys.stdout.write('Model checkpoint at epoch= {}, mean squared error= {},  regval= {}\n'.format(epoch,lossnorm, regnorm))
+                    totalnorm = ltot * normfac
+                    outstr = 'Model checkpoint at epoch= {}, \n\ttemploss per grid cell= {},  preciploss per grid cell= {}  \n\tregval= {}  totalloss= {}\n'
+                    sys.stdout.write(outstr.format(epoch,tempnorm, precipnorm, regnorm, totalnorm))
 
 
     if savefile is not None:
         saveout = '{}-{}'.format(savefile, epochckpt)
     else:
         saveout = None
-    return (lossval, saveout)
+    return (ltot, saveout)
 
 
 #### Helper functions
 
+def mk_losscalc(obs, model, oparam):
+    """Add nodes to the graph to calculate the loss function.
+    :param obs: tensor(N,nlat,nlon,nvar) of the observed data (i.e., the data we are 
+                trying to model.)
+    :param model: tensor(N, nlat, nlon, nvar) of the model output.
+    :param oparam: The other-params structure from the model specification.  This will
+                   contain the likelihood function definitions for each of the variables. 
+    :return: tuple of loss function values, calculated as the negative
+             of the total log-likelihood for the data for each
+             variable.
+
+    For the time being, nvar is 2, temperature and precipitation.
+    These two variables behave very differently, and so it's important
+    to use a likelihood function that reflects the expected
+    distribution of each.  Furthermore, each likelihood function will
+    have one or more parameters, which are specified in the oparam
+    argument.
+
+    """
+
+    ## split data into temperature and precip
+    tempobs = obs[:,:,:,0]
+    tempmod = model[:,:,:,0]
+
+    precipobs = obs[:,:,:,1]
+    precipmod = model[:,:,:,1]
+
+    temploss = mk_normal_loss(tempobs, tempmod, oparam['temp-loss'])
+    preciploss = mk_qp_loss(precipobs, precipmod, oparam['precip-loss'])
+
+    return (temploss, preciploss)
+
+def mk_normal_loss(obs, model, param):
+    """Calculate a loss function for a normal likelihood
+    :param obs: (tensor) observed data
+    :param model: (tensor) model output
+    :param param: (tuple) likelihood parameters.  For this likelihood function, the only
+                  parameter is the scale parameter.
+
+    The log-likelihood for a normal likelihood function is just sum(
+    -(xobs-xmod)^2/(2*sig^2) ).  
+
+    Yes, I am aware that the docstring for this function is
+    considerably longer than the function it documents.
+
+    """
+
+    sigval = param[1]
+    
+    ## We have to include the sigma contribution to the normalization
+    ## factor, since that's what prevents us from "improving" the fit
+    ## by simply making sigma very large.
+    with tf.variable_scope('normal_likelihood'):
+        sig = tf.constant(2.0*sigval, name='sig', dtype=tf.float32)
+        normfac = tf.constant(np.log(sigval), name='normfac', dtype=tf.float32)
+        obsscl = tf.divide(obs, sig, name='norm_obsscl')
+        modscl = tf.divide(model, sig, name='norm_modscl')
+        return tf.reduce_sum(tf.square(obsscl-modscl) + normfac, name='normal_loss')
+        #return tf.reduce_sum(tf.squared_difference(obsscl, modscl), name='normal_loss')
+    
+
+
+def mk_qp_loss(obs, model, param):
+    """Calculate a quasi-poisson loss
+    :param: obs: (tensor) observed data
+    :param model: (tensor) model output
+    :param param: (tuple) likelihod parameters.  The only parameter for this likelihood function
+                  is a scale factor.
+
+    The log-likelihood function for the quasi-poisson likelihood function is
+    -mod/sig + obs/sig * log(mod/sig) - lgamma(1+obs/sig).  From this you must subtract
+    the likelihood of the "saturated model", which is a hypothetical model that perfectly
+    captures the data:  -obs/sig * (1 - log(obs/sig))
+
+    What?  You're worried about that log because obs could be zero?  Don't be.  The limit as
+    obs approaches zero is zero.  In practice, we cut obs off at some small value where the 
+    result is close enough to zero for our purposes.
+    """
+
+    ## protect against undefined values.  The limits are all well
+    ## defined at zero, so it's fine to just cut off the inputs at
+    ## some sufficiently small fixed value.
+    with tf.variable_scope('qp_likelihood'):
+        sig = param[1]*precip_intrinsic_scale
+        print('qp sig= {}', sig)
+        sigfac = tf.constant(1.0/sig, name='sclfac', dtype=tf.float32)
+        minval = 1.0e-8
+        obsscl = tf.maximum(minval, obs*sigfac, name='obsscl')
+        modscl = tf.maximum(minval, model*sigfac, name='modscl')
+
+        ## recall loss = -loglik
+        logdenom = tf.lgamma(1.0+obsscl, name='logdenom')
+        with tf.variable_scope('model_term'):
+            modloss = modscl - obsscl*tf.log(modscl) + logdenom
+        with tf.variable_scope('saturated_term'):
+            satloss = obsscl - obsscl*tf.log(obsscl) + logdenom
+
+        return tf.reduce_sum(modloss - satloss, name='qp_loss')
+    
+
 def mk_convlayer(spec, layerin, mkreg):
+
     """Make a convolutional layer from its specification"""
     
     nfilt = spec[1]
