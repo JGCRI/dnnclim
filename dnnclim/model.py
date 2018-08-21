@@ -338,8 +338,9 @@ def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
     :param modelspec: A model specification structure
     :param climdata: Structure containing training and dev data sets
     :param savefile: Base filename for checkpoint outputs
-    :return: (perf, chkfile) Dev set performance and full name of the checkpoint file 
-             corresponding to the best performance (i.e., including the iteration number)
+    :return: (perf, chkfile, count) Dev set performance, full name of the checkpoint file 
+             corresponding to the best performance (i.e., including the iteration number), 
+             and total number of epochs run.
 
     """
 
@@ -373,6 +374,9 @@ def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
         dev_x = climdata['dev']['gmean']
         dev_y = climdata['dev']['fld']
         min_loss = np.inf
+
+        patience = 10
+        patcount = 0
         
         for epoch in range(epochs):
             ## shuffle the data once per epoch
@@ -397,6 +401,7 @@ def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
             (ltemp, lprecip, ltot, regval) = sess.run(fetches=fetch, feed_dict=fd)
             if ltot < min_loss:
                 min_loss = ltot
+                patcount = 0
                 if savefile is not None:
                     ckptr.save(sess, savefile, global_step=epoch)
                     epochckpt = epoch
@@ -406,13 +411,18 @@ def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
                     totalnorm = ltot * normfac
                     outstr = 'Model checkpoint at epoch= {}, \n\ttemploss per grid cell= {},  preciploss per grid cell= {}  \n\tregval= {}  totalloss= {}\n'
                     sys.stdout.write(outstr.format(epoch,tempnorm, precipnorm, regnorm, totalnorm))
+            else:
+                patcount += 1
+
+            if patcount >= patience:
+                break
 
 
     if savefile is not None:
         saveout = '{}-{}'.format(savefile, epochckpt)
     else:
         saveout = None
-    return (ltot, saveout)
+    return (ltot, saveout, epoch)
 
 
 #### Helper functions
