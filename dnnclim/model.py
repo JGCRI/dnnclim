@@ -141,20 +141,31 @@ def validate_modelspec(modelspec):
     return pcount
 
     
-def build_graph(modelspec, geodata):
-    """
-    Given a model specification, build the tensorflow graph for that model
+def build_graph(modelspec, geodata, stdfac=(1.0,1.0)):
+    """Given a model specification, build the tensorflow graph for that model
 
     :param modelspec: A model specification, as described in the documentation.
     :param geodata: Numpy array of geographical data shape = (nlat, nlon, 4).  The 4 channels are
                     lat, lon, elevation, and land fraction.
+    :param stdfac: tuple[2] of standardization factors computed by standardize().  
     :return: (tuple of tensors): 
-             scalar input, ground truth input, model output, temperature loss, precip loss,
+             scalar input, ground truth input, model output, natural output,
+             temperature loss, precip loss,
              regularization penalty, total_loss, training stepper
 
     The temperature and precipitation losses are the measures of discrepancy for the 
     temperature and precipitation variables.  The quantity being optimized is the 
     "total loss", which is the sum of the two, plus the regularization penalty.
+
+    The input scalars and the ground truth input fed into the network
+    can (should) be standardized using the standardize() function
+    (q.v.).  The stdfac is the factor that reverses the
+    standardization; it is computed by standardize() and returned
+    along with the standardized data.  The "natural output" is the
+    tensor that results from using stdfac to reverse the
+    standardization on the model output.  It is not used for anything
+    by the training process, but should be fetched if you want to use
+    the model output as a climate variable scenario.
 
     """
 
@@ -324,7 +335,15 @@ def build_graph(modelspec, geodata):
 
     train_step = tf.train.AdamOptimizer(otherargs['learnrate']).minimize(total_loss, name='train_step')
 
-    return(scalarin, groundtruth, output, temploss, preciploss, reg_pen, total_loss, train_step)
+    with tf.variable_scope('results'):
+        stdfac = tf.constant(stdfac, dtype=tf.float32, shape=(1,1,1,2))
+        natout = tf.multiply(stdfac, output, name='natural_output')
+
+    ## TODO: this return list is getting out of hand.  We don't
+    ## actually need to return all this stuff.  Just provide a list of
+    ## names in the docstring (possibly print them to stdout when the
+    ## graph is built.
+    return(scalarin, groundtruth, output, natout, temploss, preciploss, reg_pen, total_loss, train_step)
 
 def bcast_case(tensorin, ncase):
     """Broadcast case-independent tensor to be compatible with case-dependent tensors."""
@@ -332,20 +351,68 @@ def bcast_case(tensorin, ncase):
     return tensorin + tf.zeros(newshape)
 
 
-def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
+def standardize(climdata):
+    """Standardize the input data set.
+    :param climdata:  Dictionary of input data, organized by train/test/dev set.  This data 
+                      will be modified in place.
+    :return: (tuple) Array of standardization factors.  These will be needed by build_graph
+
+    The input data should be standardized so that the dramatic
+    difference in scale between temperature and precipitation doesn't
+    skew the results.  Standardizing the time inputs is less
+    important, but we do it anyway while we're here.  We don't need a
+    standardization factor for time because it's not an output.
+
+    """
+
+    ## compute the standardization factor on the training data only
+    ## (it shouldn't be much different from the other sets, but we
+    ## maintain a strict no peeking policy.)
+    tempfld = climdata['train']['fld'][...,0]
+    precipfld = climdata['train']['fld'][...,1]
+
+    tempfac = 1.0/np.mean(tempfld)
+    precipfac = 1.0/np.mean(precipfld)
+    ## Year values are all between 0 and 100, so the standardization
+    ## factor there is just 1/100
+
+    ## apply these standardization factors to all of the input data
+    for dset in ('train','dev','test'):
+        climdata[dset]['fld'][...,0] *= tempfac
+        climdata[dset]['fld'][...,1] *= precipfac
+
+        climdata[dset]['gmean'][...,0] *= tempfac # global mean temperature
+        climdata[dset]['gmean'][...,1] *= 0.01    # time
+
+
+    stdfac = np.array([1.0/tempfac, 1.0/precipfac])
+    sys.stdout.write('stdfac = {}\n'.format(stdfac))
+    return stdfac
+
+    
+
+def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefile=None, outfile=None):
+
     """Train and evaluate a model.
 
     :param modelspec: A model specification structure
     :param climdata: Structure containing training and dev data sets
+    :param stdfac: Standardization factor for the climate data, as computed by standardize().
+                   If set to None, then the data has not yet been standardized, and we need to
+                   do so before we start.
     :param savefile: Base filename for checkpoint outputs
+    :param outfile: Base filename for saving model output
     :return: (perf, chkfile, count) Dev set performance, full name of the checkpoint file 
              corresponding to the best performance (i.e., including the iteration number), 
              and total number of epochs run.
 
     """
 
-    (scalarin, groundtruth, output, temploss, preciploss,
-     reg_pen, total_loss, train_step) = build_graph(modelspec, climdata['geo'])
+    if stdfac is None:
+        stdfac = standardize(climdata)
+    
+    (scalarin, groundtruth, output, natout, temploss, preciploss,
+     reg_pen, total_loss, train_step) = build_graph(modelspec, climdata['geo'], stdfac)
 
     if savefile is not None:
         ckptr = tf.train.Saver()
@@ -417,11 +484,19 @@ def runmodel(modelspec, climdata, epochs=100, batchsize=15, savefile=None):
             if patcount >= patience:
                 break
 
+        if outfile is not None:
+            (outdata,) = sess.run(fetches=[natout], feed_dict={scalarin:dev_x, groundtruth:dev_y})
+            ofs = open(outfile,'wb')
+            pickle.dump(outdata, ofs)
+            ofs.close()
+
 
     if savefile is not None:
         saveout = '{}-{}'.format(savefile, epochckpt)
     else:
         saveout = None
+
+        
     return (ltot, saveout, epoch)
 
 
@@ -455,7 +530,9 @@ def mk_losscalc(obs, model, oparam):
     precipmod = model[:,:,:,1]
 
     temploss = mk_normal_loss(tempobs, tempmod, oparam['temp-loss'])
-    preciploss = mk_qp_loss(precipobs, precipmod, oparam['precip-loss'])
+    #preciploss = mk_qp_loss(precipobs, precipmod, oparam['precip-loss'])
+    ## qp loss for precip isn't working just yet.
+    preciploss = mk_normal_loss(precipobs, precipmod, oparam['precip-loss'])
 
     return (temploss, preciploss)
 
@@ -485,7 +562,6 @@ def mk_normal_loss(obs, model, param):
         obsscl = tf.divide(obs, sig, name='norm_obsscl')
         modscl = tf.divide(model, sig, name='norm_modscl')
         return tf.reduce_sum(tf.square(obsscl-modscl) + normfac, name='normal_loss')
-        #return tf.reduce_sum(tf.squared_difference(obsscl, modscl), name='normal_loss')
     
 
 
