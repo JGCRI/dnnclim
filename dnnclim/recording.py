@@ -47,9 +47,9 @@ class RunRecorder:
         self.outputs = os.path.join(self.recorddir, 'outputs')
 
         if not os.path.exists(self.recorddir):
-            os.mkdirs(self.recorddir)
-            os.mkdirs(self.tfsaves)
-            os.mkdirs(self.outputs)
+            os.makedirs(self.recorddir)
+            os.makedirs(self.tfsaves)
+            os.makedirs(self.outputs)
         elif noclobber:
             raise IOError('Directory {} exists, and noclobber is set.'.format(self.recorddir))
 
@@ -67,7 +67,7 @@ class RunRecorder:
 
         """
 
-        if not isinstance(modelspec, string):
+        if not isinstance(modelspec, str):
             ## convert the modelspec structure to the string used to
             ## represent it.  This is the usual case, but we allow for
             ## the possibility that the user has passed in a structure
@@ -92,7 +92,7 @@ class RunRecorder:
         self.runs[idx]['savebase'] = os.path.join(self.tfsaves, runstr)
         self.runs[idx]['outfile'] = os.path.join(self.outputs, outfilename)
 
-        unwritten.append(idx)   # Stored but not yet written
+        self.unwritten.append(idx)   # Stored but not yet written
         
         return idx
 
@@ -130,7 +130,7 @@ class RunRecorder:
         return [self.indices[model] for model in modelspecs]
 
 
-    def record_rslts(self, idxormodelspec, lossval, finalsave):
+    def record_rslts(self, idxorspec, lossval, finalsave):
         """Record the results of training a given model.
 
         :param idxorspec: Index returned by newrun(), or a modelspec
@@ -157,8 +157,8 @@ class RunRecorder:
 
         """
 
-        writevals = {idx:self.runs[idx] for idx in unwritten}
+        writevals = {idx:self.runs[idx] for idx in self.unwritten}
 
         self.index.write(yaml.dump(writevals))
-        unwritten = []
+        self.unwritten = []
 

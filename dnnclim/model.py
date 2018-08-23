@@ -718,7 +718,3 @@ def convnparam(layer, nchannel, bias=True):
 
     return np
 
-
-#### TODO:
-####   Calculate number of parameters
-####   Add geographic coords as inputs.
