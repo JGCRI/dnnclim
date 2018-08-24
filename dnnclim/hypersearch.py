@@ -3,6 +3,22 @@
 import numpy as np
 import copy
 
+def conjugate(modelspec1, modelspec2, nmutate=1):
+    """Produce a hybrid model based on each of two parent models"""
+    modlist = [modelspec1, modelspec2]
+    choice = np.random.randint(2, size=4)
+
+    newmodel = []
+    for i in range(4):
+        ## add the ith item from model choice[i] (where choice[i] is in [0,1])
+        newmodel.append(modlist[choice[i]][i])
+
+    for i in range(nmutate):
+        newmodel = mutate_config(newmodel)
+
+    return tuple(newmodel)
+
+
 def mutate_config(modelspec):
     """Apply a single mutation to a configuration."""
 
@@ -85,7 +101,6 @@ def mutate_stage(stage, branchtype):
 
 
 def newconv():
-    print('\taddlayer')
     nfilt = np.random.randint(8,17)
     kxsize = np.random.randint(3,8)
     kysize = np.random.randint(3,8)
@@ -93,7 +108,6 @@ def newconv():
     return ('C', nfilt, (kxsize, kysize))
 
 def mutate_nfilt(layer):
-    print('\tmutate nfilt')
     chg = 0
     oldn = layer[1]
     while chg==0:
@@ -105,7 +119,6 @@ def mutate_nfilt(layer):
     return (layer[0], int(newn), layer[2])
 
 def mutate_nkern(layer):
-    print('\tmutate nkern')
     chgx = 0
     chgy = 0
 
@@ -129,7 +142,6 @@ def mutate_nkern(layer):
 
 
 def mutate_otherparams(op):
-    print('\tmutate other')
     """Mutate the other parameters in a configuration.
 
     Currently the other parameters include:
