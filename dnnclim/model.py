@@ -27,6 +27,9 @@ geo_input_imgsize = (192,288)
 ## variance to the per-cell mean.
 precip_intrinsic_scale = 4e-7
 
+## Layer to convert the output into two channels.
+outputlayer = ('C', 2, (1,1))
+
 def validate_modelspec(modelspec):
     """Check to see that a model specification meets all of the, and count number of parameters.
 
@@ -124,6 +127,9 @@ def validate_modelspec(modelspec):
             print('\tusnchannel = {}'.format(usnchannel))
             usnchannel = layer[1]
 
+    ## Account for the final output conversion layer
+    pcount += convnparam(outputlayer, usnchannel)
+    
     ## The image sizes of all of the stages in the upsampling branch
     ## must be the same as the corresponding stages in the
     ## downsampling branch. The numbers of channels don't have to
@@ -313,7 +319,12 @@ def build_graph(modelspec, geodata, stdfac=(1.0,1.0)):
                 else:
                     ## should be able to get here
                     raise RuntimeError("Invalid modelspec slipped through somehow")
-        output = layerin        # i.e., the result of the last convolutional layer in the last stage
+
+        ## add a final pixel-by-pixel convolutional layer (i.e., a
+        ## fully connected layer between channels for each grid cell).
+        ## This guarantees that we get exactly two channels out.
+        output = mk_convlayer(outputlayer, layerin, reg)
+
         
     ## That's all of the branches, now extract the results.
     
