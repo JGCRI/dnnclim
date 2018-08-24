@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import dnnclim
+import copy
 import pickle
 
 configs = [

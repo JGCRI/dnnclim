@@ -151,7 +151,7 @@ def build_graph(modelspec, geodata, stdfac=(1.0,1.0)):
     :return: (tuple of tensors): 
              scalar input, ground truth input, model output, natural output,
              temperature loss, precip loss,
-             regularization penalty, total_loss, training stepper
+             regularization penalty, total_loss, performance, training stepper
 
     The temperature and precipitation losses are the measures of discrepancy for the 
     temperature and precipitation variables.  The quantity being optimized is the 
@@ -166,6 +166,10 @@ def build_graph(modelspec, geodata, stdfac=(1.0,1.0)):
     standardization on the model output.  It is not used for anything
     by the training process, but should be fetched if you want to use
     the model output as a climate variable scenario.
+
+    Performance is calculated in the natural output scaling as mean
+    absolute error.  Temperature is left in Kelvin, while precip is
+    scaled to mm/day.
 
     """
 
@@ -338,12 +342,17 @@ def build_graph(modelspec, geodata, stdfac=(1.0,1.0)):
     with tf.variable_scope('results'):
         stdfac = tf.constant(stdfac, dtype=tf.float32, shape=(1,1,1,2))
         natout = tf.multiply(stdfac, output, name='natural_output')
+        natgt  = tf.multiply(stdfac, groundtruth, name='natural_groundtruth')
+        mmpd = tf.constant(86400, dtype=tf.float32, name='mm-per-day-conv')
+        temprmse = tf.reduce_mean(tf.abs(natout[:,:,:,0]-natgt[:,:,:,0]), name='tempMAE')
+        preciprmse = tf.multiply(mmpd, tf.reduce_mean(tf.abs(natout[:,:,:,1]-natgt[:,:,:,1])), name='precipMAE')
+        perf = (temprmse, preciprmse)
 
     ## TODO: this return list is getting out of hand.  We don't
     ## actually need to return all this stuff.  Just provide a list of
     ## names in the docstring (possibly print them to stdout when the
     ## graph is built.
-    return(scalarin, groundtruth, output, natout, temploss, preciploss, reg_pen, total_loss, train_step)
+    return(scalarin, groundtruth, output, natout, temploss, preciploss, reg_pen, total_loss, perf, train_step)
 
 def bcast_case(tensorin, ncase):
     """Broadcast case-independent tensor to be compatible with case-dependent tensors."""
@@ -401,18 +410,26 @@ def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefil
                    If set to None, then the data has not yet been standardized, and we need to
                    do so before we start.
     :param savefile: Base filename for checkpoint outputs
-    :param outfile: Base filename for saving model output
-    :return: (perf, chkfile, count) Dev set performance, full name of the checkpoint file 
-             corresponding to the best performance (i.e., including the iteration number), 
-             and total number of epochs run.
+    :param outfile: Base filename for saving model output 
+    :return: (perf, chkfile, count) Dev set performance (tuple:
+             temperature, precip), full name of the checkpoint file
+             corresponding to the best performance (i.e., including
+             the iteration number), and total number of epochs run.
+
+    Tips:
+
+    If you're running more than one network, you should standardize
+    once and pass the standardized version.
 
     """
 
     if stdfac is None:
+        import copy
+        climdata = copy.deepcopy(climdata)
         stdfac = standardize(climdata)
     
     (scalarin, groundtruth, output, natout, temploss, preciploss,
-     reg_pen, total_loss, train_step) = build_graph(modelspec, climdata['geo'], stdfac)
+     reg_pen, total_loss, perf, train_step) = build_graph(modelspec, climdata['geo'], stdfac)
 
     if savefile is not None:
         ckptr = tf.train.Saver()
@@ -469,6 +486,8 @@ def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefil
             if ltot < min_loss:
                 min_loss = ltot
                 patcount = 0
+                ## get output and performance for this model.
+                (outdata,perfout) = sess.run(fetches=[natout, perf], feed_dict={scalarin:dev_x, groundtruth:dev_y}) 
                 if savefile is not None:
                     ckptr.save(sess, savefile, global_step=epoch)
                     epochckpt = epoch
@@ -484,11 +503,14 @@ def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefil
             if patcount >= patience:
                 break
 
-        if outfile is not None:
-            (outdata,) = sess.run(fetches=[natout], feed_dict={scalarin:dev_x, groundtruth:dev_y})
-            ofs = open(outfile,'wb')
-            pickle.dump(outdata, ofs)
-            ofs.close()
+
+            
+    ## Write outdata from the last epoch that improved the results
+    ## (if requested)
+    if outfile is not None:
+        ofs = open(outfile,'wb')
+        pickle.dump(outdata, ofs)
+        ofs.close()
 
 
     if savefile is not None:
@@ -496,8 +518,9 @@ def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefil
     else:
         saveout = None
 
-        
-    return (ltot, saveout, epoch)
+    ## perfout was calculated in the loop over epochs.
+    perfout = [np.asscalar(x) for x in perfout] # convert to simple python type.
+    return (perfout, saveout, epoch)
 
 
 #### Helper functions
