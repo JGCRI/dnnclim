@@ -189,3 +189,15 @@ def mutate_otherparams(op):
     return op
 
             
+def genpool(parents, npool, nmutate):
+    """Generate a pool of networks from a collection of parent networks.
+
+    :param parents: List of prospective parent networks.
+    :param npool: number of networks to generate for the pool
+    :param nmutate: number of mutations to apply to each hybrid network
+
+    """
+
+    netselect = np.random.randint(len(parents), size=(npool,2))
+
+    return [conjugate(parents[sel[0]], parents[sel[1]], nmutate) for sel in netselect]

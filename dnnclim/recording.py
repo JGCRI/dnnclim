@@ -12,6 +12,7 @@
 
 import yaml
 import os
+import numpy as np
 
 class RunRecorder:
     """Structure for keeping and writing records of runs performed"""
@@ -127,7 +128,7 @@ class RunRecorder:
 
         ## obviously, this won't perform gracefully if one or more of
         ## the model configurations isn't in the index.
-        return [self.indices[model] for model in modelspecs]
+        return [self.indices[repr(model)] for model in modelspecs]
 
 
     def record_rslts(self, idxorspec, lossval, finalsave):
@@ -162,3 +163,19 @@ class RunRecorder:
         self.index.write(yaml.dump(writevals))
         self.unwritten = []
 
+    def make_sortkey(self):
+        """Create a function that can be passed to list.sort() as a sort key.
+
+        Handy for sorting a list of configs from best to worst.  The
+        key that is used is the sum reduction of the item stored in
+        the configuration's loss function.
+
+        """
+
+        def sortkey(config):
+            [idx] = self.findconfig([config]) # TODO: really need a class for configs; too easy to forget the brackets.
+            return np.sum(self.runs[idx]['lossval'])
+
+        return sortkey
+            
+        

@@ -10,9 +10,9 @@ date
 
 ##tid=$SLURM_ARRAY_TASK_ID
 
-program="runconfigs.py"
+program="runhs.py"
 
-python ./$program
+python ./$program 
 
 date
 
