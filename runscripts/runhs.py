@@ -78,6 +78,7 @@ for opt in args:
 
 
 import dnnclim
+dnnclim.model.write_summaries = False
 rslts = dnnclim.run_hypersearch(args)    
 
 sys.stdout.write('Index\tperf\tsavefile\n')

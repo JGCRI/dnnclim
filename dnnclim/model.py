@@ -18,6 +18,8 @@ scalar_input_nchannel = 2
 geo_input_nchannel = 4
 geo_input_imgsize = (192,288)
 
+write_summaries = True
+
 ## We use a quasipoisson likelihood function for precipitation.  In
 ## order for this to be remotely valid, precip must be scaled so that
 ## its variance is equal (more or less) to its mean.  This factor
@@ -452,7 +454,8 @@ def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefil
                                        # fields separately.
     
     with tf.Session() as sess:
-        summarywriter = tf.summary.FileWriter('logs', sess.graph)
+        if write_summaries:
+            summarywriter = tf.summary.FileWriter('logs', sess.graph)
 
         init = tf.global_variables_initializer()
         sess.run(fetches=[init])
