@@ -161,6 +161,7 @@ class RunRecorder:
         writevals = {idx:self.runs[idx] for idx in self.unwritten}
 
         self.index.write(yaml.dump(writevals))
+        self.index.flush()
         self.unwritten = []
 
     def make_sortkey(self):
@@ -178,4 +179,13 @@ class RunRecorder:
 
         return sortkey
             
-        
+    def summarize(self, indices):
+        """Return summary information for a list of models, specified by their indices.
+
+        :param indices: sequence of model indices to report on
+        :return: list of triples of (index, performance, savefile name)
+
+        """
+
+        return [(idx, self.runs[idx]['lossval'], self.runs[idx]['final-save']) for idx in indices]
+    

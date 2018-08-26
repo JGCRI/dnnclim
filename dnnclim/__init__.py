@@ -5,4 +5,4 @@ __all__ = ['data', 'model', 'recording', 'hypersearch']
 ## data because it will be less commonly used.
 from dnnclim.model import validate_modelspec, runmodel, standardize
 from dnnclim.recording import RunRecorder
-from dnnclim.hypersearch import conjugate, mutate_config, genpool
+from dnnclim.hypersearch import conjugate, mutate_config, genpool, run_hypersearch

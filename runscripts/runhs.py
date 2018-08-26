@@ -1,118 +1,88 @@
+#!/usr/bin/env python
 
-import dnnclim
-import pickle
+import argparse
 import numpy as np
 import sys
-import yaml
 
-## Fix the random number seed so that our results are reproducible.
+#### TODO: add a way to load one or more previously trained networks
+#### as a base configuration.
+
+## Set the random number seed so that our results are reproducible.
+## (Sort of.  Tensorflow has its own seed, but we can't set it until
+## the tensorflow graph is set up.)
 np.random.seed(8675309)
 
-## run parameters.
-## TODO: read these from the command line
-npool = 10                      # size of the eval pool
-nkeep = 100                     # number of networks to keep
-nspawn = 5                      # number of the best networks to use to generate the next eval pool
-nmutate = 2                     # number of mutations to apply in each generation
-recorddir = './hpsearch'
-inputdata = 'testdata/dnnclim.dat'
-ngen = 10
-nepoch = 50
 
-## basic configuration
-baseconfig = (# config 1
-    (
-        ( # stage 1
-            ('C', 16, (3,3)),
-            ('C', 16, (3,3)),
-            ('D', (2,3))
+## basic configurations.  These will be selected by a command line argument.
+## TODO: read these from a config file instead of defining inline.
+baseconfigs = [
+    (# config 1
+        (
+            ( # stage 1
+                ('C', 16, (3,3)),
+                ('C', 16, (3,3)),
+                ('D', (2,3))
+            ),
         ),
+        (
+            ( # stage 1
+                ('U', 16, (3,3), (4,4)),
+                ('C', 16, (3,3))    
+            ),
+            ( # stage 2
+                ('U', 16, (3,3), (4,4)),
+                ('C', 16, (3,3)),
+            ),
+            ( # stage 3
+                ('U', 16, (3,3), (6,6)),
+                ('C', 16, (3,3)),
+            )
+        ),
+        (
+            ( # stage 1
+                ('U', 16, (3,3), (2,3)),
+                ('C', 8, (3,3)),
+                ('C', 2, (3,3))
+            ),
+        ),
+        {'learnrate':0.01, 'regularization':('L1', 1.0), 'temp-loss':('normal',1.0), 'precip-loss':('qp', 1.0)}
     ),
-    (
-        ( # stage 1
-            ('U', 16, (3,3), (4,4)),
-            ('C', 16, (3,3))    
-        ),
-        ( # stage 2
-            ('U', 16, (3,3), (4,4)),
-            ('C', 16, (3,3)),
-        ),
-        ( # stage 3
-            ('U', 16, (3,3), (6,6)),
-            ('C', 16, (3,3)),
-        )
-    ),
-    (
-        ( # stage 1
-            ('U', 16, (3,3), (2,3)),
-            ('C', 8, (3,3)),
-            ('C', 2, (3,3))
-        ),
-    ),
-    {'learnrate':0.01, 'regularization':('L1', 1.0), 'temp-loss':('normal',1.0), 'precip-loss':('qp', 1.0)}
-)
+]
 
 
-## Create the evaluation pool by adding the base config and filling
-## out the rest with hybrids.
-pool = dnnclim.genpool([baseconfig], npool, 3) 
+parser = argparse.ArgumentParser()
+
+## TODO: add a clobber argument
+parser.add_argument('inputdata', help='Filename for the input data')
+parser.add_argument('recorddir', help='Directory to write results into. Must *not* already exist')
+parser.add_argument('configid', type=int, help='Index in the list of base configs')
+parser.add_argument('-k', dest='nkeep', type=int, help='Number of models to keep', default=100)
+parser.add_argument('-g', dest='ngen', type=int, help='Number of generations to run', default=10)
+parser.add_argument('-p', dest='npool', type=int, help='Number of models in the eval pool', default=10)
+parser.add_argument('-s', dest='nspawn', type=int, help='Number of models to participate in hybridization',
+                    default=10)
+parser.add_argument('-m', dest='nmutate', type=int, help='Number of mutations to apply to each hybrid model',
+                    default=1)
+parser.add_argument('-e', dest='nepoch', type=int, help='Number of epochs to train each model when evaluating',
+                    default=1000)
+
+argvals = parser.parse_args()
+
+args = vars(argvals)
+args['baseconfig'] = baseconfigs[argvals.configid] 
+
+sys.stdout.write('Run options:\n')
+for opt in args:
+    sys.stdout.write('\t{} :  {}\n'.format(opt, args[opt]))
 
 
-## List of the networks to keep, none yet obviously
-keepnets = []
 
-rr = dnnclim.RunRecorder(recorddir)
-sortkey = rr.make_sortkey()
+import dnnclim
+rslts = dnnclim.run_hypersearch(args)    
 
-## load the data and standardize it
-infile = open(inputdata, 'rb')
-climdata = pickle.load(infile)
-infile.close()
-stdfac = dnnclim.standardize(climdata)
-
-
-## Function that does the work.  It closes over rr (the run recorder) and climdata
-def run_pool_member(config, idx):
-    """Run a config and return a tuple of (performance, savefile)"""
-    (sf, of) = rr.filenames(idx)
-    (perf, ckptfile, niter) = dnnclim.runmodel(config, climdata, stdfac=stdfac, epochs=nepoch,
-                                               savefile=sf, outfile=of)
-    return (perf, ckptfile)
-
-for gen in range(ngen):
-    sys.stdout.write('Generation: {}\n', gen)
-    if len(pool) == 0:
-        ## On iterations after the first, the eval pool will have been
-        ## emptied by the previous iteration
-        pool = dnnclim.genpool(keepnets[:nspawn], npool, nmutate)
-        
-    indices = [rr.newrun(config) for config in pool]
-    
-    ## This piece could be parallelized
-    rslts = map(run_pool_member, pool, indices)
-    
-    for (idx,rslt) in zip(indices,rslts):
-        rr.record_rslts(idx, rslt[0], rslt[1])
-
-    ## sort the pool in ascending order by performance (performance is
-    ## MAE, so lower is better)
-    keepnets += pool
-    keepnets.sort(key=sortkey)
-    if len(keepnets) > nkeep:
-        keepnets[nkeep:] = []
-
-    ## reset the pool for the next iteration
-    pool = []
-
-    ## Write out the run data we've collected so far
-    rr.writeindex()
-    
-
-## write the best networks we found to stdout.
-indices = rr.findconfig(keepnets)
 sys.stdout.write('Index\tperf\tsavefile\n')
-for idx in indices:
-    sys.stdout.write('{}\t{}\n'.format(idx, rr.runs[idx]['lossval'], rr.runs[idx]['final-save']))
+for rslt in rslts:
+    sys.stdout.write('{}\t{}\t{}\n'.format(rslt[0], rslt[1], rslt[2]))
 
 sys.stdout.write('\nFIN.\n')
 

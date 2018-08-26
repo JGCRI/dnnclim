@@ -2,6 +2,9 @@
 
 import numpy as np
 import copy
+import pickle
+import dnnclim
+import sys
 
 def conjugate(modelspec1, modelspec2, nmutate=1):
     """Produce a hybrid model based on each of two parent models"""
@@ -201,3 +204,109 @@ def genpool(parents, npool, nmutate):
     netselect = np.random.randint(len(parents), size=(npool,2))
 
     return [conjugate(parents[sel[0]], parents[sel[1]], nmutate) for sel in netselect]
+
+
+def run_hypersearch(args):
+    """Run a hyperparameter search for a specified family of networks.
+
+    :param args: dictionary of arguments (see below)
+    :return: list of triples (idx, performance, savefile)
+
+    The arguments to be supplied in args are:
+        * baseconfig  : model specification that will serve as the prototype for
+                        the networks to be tested
+        * inputdata   : name of the file containing the input data
+        * recorddir   : name of the directory to record the results in
+        * nkeep       : number of top performing models to keep
+        * ngen        : number of generations to run
+        * npool       : number of models to evaluate in each generation
+        * nspawn      : number of models to participate in hybridization in each
+                        generation
+        * nmutate     : number of mutations to apply to each hybrid
+        * nepoch      : number of epochs to train each model in evaluation
+
+    """
+
+    ## TODO: other options that would be nice to be able to set:
+    ##    initmutate (see below)
+    ##    clobber/noclobber
+    ##    minibatch size
+    
+    baseconfig = args['baseconfig']
+    inputdata = args['inputdata']
+    recorddir = args['recorddir']
+    nkeep = args['nkeep']
+    ngen = args['ngen']
+    npool = args['npool']
+    nspawn = args['nspawn']
+    nmutate = args['nmutate']
+    nepoch = args['nepoch']
+
+    initmutate = 3              # number of mutations to use in the initial pool
+    
+    ## Create the evaluation pool by adding the base config and filling
+    ## out the rest with hybrids.  
+    pool = genpool([baseconfig], npool, initmutate) 
+
+    ## List of the networks to keep (none yet, obviously)
+    keepnets = []
+
+    rr = dnnclim.RunRecorder(recorddir)
+    sortkey = rr.make_sortkey()
+
+    ## load the data and standardize it
+    infile = open(inputdata, 'rb')
+    climdata = pickle.load(infile)
+    infile.close()
+    stdfac = dnnclim.standardize(climdata)
+
+
+    ## Function that does the work.  It closes over rr (the run
+    ## recorder) and climdata.  If we ever want to parallelize the map
+    ## call below, we will probably need to convert this into a class
+    ## with a __call__ method so that we can pickle it and send it
+    ## over the wire to the worker nodes.
+    def run_pool_member(config, idx):
+        """Run a config and return a tuple of (performance, savefile)"""
+        (sf, of) = rr.filenames(idx)
+        (perf, ckptfile, niter) = dnnclim.runmodel(config, climdata, stdfac=stdfac, epochs=nepoch,
+                                                   savefile=sf, outfile=of)
+        return (perf, ckptfile)
+
+    for gen in range(ngen):
+        sys.stdout.write('Generation: {}\n'.format(gen))
+        if len(pool) == 0:
+            ## On the first iteration the pool will be full of models
+            ## from the initialization procedure.  On iterations after
+            ## the first, the eval pool will have been emptied by the
+            ## previous iteration.
+            pool = dnnclim.genpool(keepnets[:nspawn], npool, nmutate)
+
+        indices = [rr.newrun(config) for config in pool]
+
+        ## This piece is where the heavy lifting happens.  It could be
+        ## parallelized over multiple nodes, but it appears that
+        ## python does not have an easy equivalent of R's parmapply,
+        ## so getting parallelism to work will probably take a bit
+        ## more effort than we want to expend right now.
+        rslts = map(run_pool_member, pool, indices)
+
+        for (idx,rslt) in zip(indices,rslts):
+            rr.record_rslts(idx, rslt[0], rslt[1])
+
+        ## sort the pool in ascending order by performance
+        ## (performance is MAE, so lower is better).  Drop any excess
+        ## models from the end of the list.
+        keepnets += pool
+        keepnets.sort(key=sortkey)
+        keepnets = keepnets[:nkeep]
+
+        ## reset the pool for the next iteration
+        pool = []
+
+        ## Write out the run data we've collected so far
+        rr.writeindex()
+
+    ## collect and return summary of results
+    indices = rr.findconfig(keepnets)
+    return rr.summarize(indices)
