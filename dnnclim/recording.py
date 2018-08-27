@@ -7,7 +7,7 @@
        * Record the results of a run: record_rslts()
        * Write all as yet unwritten index records: writeindex()
        * Return a list of indices for a list of input configurations:
-         findconfig()
+         findidx()
 """
 
 import yaml
@@ -68,12 +68,7 @@ class RunRecorder:
 
         """
 
-        if not isinstance(modelspec, str):
-            ## convert the modelspec structure to the string used to
-            ## represent it.  This is the usual case, but we allow for
-            ## the possibility that the user has passed in a structure
-            ## that has already been converted.
-            modelspec = repr(modelspec)
+        modelstr = repr(modelspec)
 
         ## get next available index
         idx = self.idx
@@ -81,7 +76,7 @@ class RunRecorder:
 
         ## TODO: There's enough going on here that the items in
         ## self.runs could probably use a class of their own.
-        self.indices[modelspec] = idx
+        self.indices[modelstr] = idx
         self.runs[idx] = {}
         self.runs[idx]['modelspec'] = modelspec
         self.runs[idx]['final-save'] = None # Won't be known until we do the run
@@ -97,6 +92,9 @@ class RunRecorder:
         
         return idx
 
+    def getconfig(self, idx):
+        """Get the configuration for a given index."""
+        return self.runs[idx]['modelspec'] 
     
     def filenames(self, idxorspec):
         """Get the filename arguments for runmodel()
@@ -112,12 +110,12 @@ class RunRecorder:
         if isinstance(idxorspec, int):
             idx = idxorspec
         else:
-            [idx] = findconfig([idxorspec])
+            [idx] = findidx([idxorspec])
 
         return (self.runs[idx]['savebase'], self.runs[idx]['outfile'])
 
     
-    def findconfig(self, modelspecs):
+    def findidx(self, modelspecs):
         """Find the indices for a sequence of model specifications
 
         :param modelspecs: A sequence of model specification structures. Note
@@ -143,7 +141,7 @@ class RunRecorder:
         if isinstance(idxorspec, int):
             idx = idxorspec
         else:
-            [idx] = findconfig([idxorspec])
+            [idx] = findidx([idxorspec])
 
         self.runs[idx]['lossval'] = lossval
         self.runs[idx]['final-save'] = finalsave
@@ -174,7 +172,7 @@ class RunRecorder:
         """
 
         def sortkey(config):
-            [idx] = self.findconfig([config]) # TODO: really need a class for configs; too easy to forget the brackets.
+            [idx] = self.findidx([config]) # TODO: really need a class for configs; too easy to forget the brackets.
             return np.sum(self.runs[idx]['lossval'])
 
         return sortkey

@@ -308,5 +308,5 @@ def run_hypersearch(args):
         rr.writeindex()
 
     ## collect and return summary of results
-    indices = rr.findconfig(keepnets)
+    indices = rr.findidx(keepnets)
     return rr.summarize(indices)
