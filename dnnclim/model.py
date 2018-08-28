@@ -32,7 +32,7 @@ precip_intrinsic_scale = 4e-7
 ## Layer to convert the output into two channels.
 outputlayer = ('C', 2, (1,1))
 
-def validate_modelspec(modelspec):
+def validate_modelspec(modelspec, quiet = False):
     """Check to see that a model specification meets all of the, and count number of parameters.
 
     :param modelspec: A model specification structure
@@ -57,8 +57,8 @@ def validate_modelspec(modelspec):
             ## All layers except the last must be convolutional
             chkconv(layer, 'dsbranch')
             pcount += convnparam(layer, dsnchannel)
-            print('***layer param: {}'.format(convnparam(layer, dsnchannel)))
-            print('\tnchannel in= {}  nchannel out= {}'.format(dsnchannel, layer[1]))
+            quiet or print('***layer param: {}'.format(convnparam(layer, dsnchannel)))
+            quiet or print('\tnchannel in= {}  nchannel out= {}'.format(dsnchannel, layer[1]))
             dsnchannel = layer[1]
         layer = stage[-1]
         chkmxpl(layer, 'dsbranch') # no parameters for max pooling layer.
@@ -77,7 +77,7 @@ def validate_modelspec(modelspec):
         layer = stage[0]
         chkxconv(layer, 'sclbranch') 
         pcount += convnparam(layer, sclnchannel) # convnparam also calculates nparam for xposeconv
-        print('***layer param: {}'.format(convnparam(layer, sclnchannel)))
+        quiet or print('***layer param: {}'.format(convnparam(layer, sclnchannel)))
         sclnchannel = layer[1]
 
         insize = scl_stage_sizes[-1]
@@ -88,7 +88,7 @@ def validate_modelspec(modelspec):
         for layer in stage[1:]:
             chkconv(layer, 'sclbranch')
             pcount += convnparam(layer, sclnchannel)
-            print('***layer param: {}'.format(convnparam(layer, sclnchannel)))
+            quiet or print('***layer param: {}'.format(convnparam(layer, sclnchannel)))
             sclnchannel = layer[1]
 
     ## The output of the last stage of the scalar branch must be the
@@ -103,13 +103,13 @@ def validate_modelspec(modelspec):
     us_stage_sizes = ds_stage_sizes[0:1]
     usnchannel = sclnchannel + dsnchannel
     dsidx = 0
-    print('ds_stage_sizes: {}'.format(ds_stage_sizes))
+    quiet or print('ds_stage_sizes: {}'.format(ds_stage_sizes))
     for stage in usbranch:
         ## First layer must be upsampling layer
         layer = stage[0]
         chkxconv(layer, 'usbranch') 
         pcount += convnparam(layer, usnchannel) # conv and xconv calculate nparam the same way
-        print('***layer param: {}'.format(convnparam(layer, usnchannel)))
+        quiet or print('***layer param: {}'.format(convnparam(layer, usnchannel)))
         usnchannel = layer[1]
         
         insize = us_stage_sizes[-1]
@@ -117,7 +117,7 @@ def validate_modelspec(modelspec):
         us_stage_sizes.append(outsize)
 
         ## account for the additional channels added from the ds branch
-        print('\tU-bind accounting:  usnchannel= {}  dsnchannel= {}'.format(usnchannel, ds_copy_sizes[dsidx][2]))
+        quiet or print('\tU-bind accounting:  usnchannel= {}  dsnchannel= {}'.format(usnchannel, ds_copy_sizes[dsidx][2]))
         usnchannel += ds_copy_sizes[dsidx][2]
         dsidx += 1
         
@@ -125,8 +125,8 @@ def validate_modelspec(modelspec):
         for layer in stage[1:]:
             chkconv(layer, 'usbranch')
             pcount += convnparam(layer, usnchannel)
-            print('***layer param: {}'.format(convnparam(layer, usnchannel)))
-            print('\tusnchannel = {}'.format(usnchannel))
+            quiet or print('***layer param: {}'.format(convnparam(layer, usnchannel)))
+            quiet or print('\tusnchannel = {}'.format(usnchannel))
             usnchannel = layer[1]
 
     ## Account for the final output conversion layer
@@ -141,15 +141,16 @@ def validate_modelspec(modelspec):
             raise RuntimeError("Mismatch in dsbranch and usbranch stage sizes.  sizes(dsbranch):  {}  sizes(usbranch):  {}".format(ds_stage_sizes, us_stage_sizes))
         
     ## Success.  Print some summary statistics.
-    sys.stdout.write('Downsampling branch:\t{} stages\tfinal size: {}\n'.format(len(dsbranch), ds_stage_sizes[0]))
-    sys.stdout.write('      Scalar branch:\t{} stages\tfinal size: {}\n'.format(len(sclbranch), scl_stage_sizes[-1]))
-    sys.stdout.write('  Upsampling branch:\t{} stages\tfinal size: {}\n'.format(len(usbranch), us_stage_sizes[-1]))
-    sys.stdout.write('\nTotal free parameters:\t{}\n'.format(pcount))
+    if not quiet:
+        sys.stdout.write('Downsampling branch:\t{} stages\tfinal size: {}\n'.format(len(dsbranch), ds_stage_sizes[0]))
+        sys.stdout.write('      Scalar branch:\t{} stages\tfinal size: {}\n'.format(len(sclbranch), scl_stage_sizes[-1]))
+        sys.stdout.write('  Upsampling branch:\t{} stages\tfinal size: {}\n'.format(len(usbranch), us_stage_sizes[-1]))
+        sys.stdout.write('\nTotal free parameters:\t{}\n'.format(pcount)) 
 
     return pcount
 
     
-def build_graph(modelspec, geodata, stdfac=(1.0,1.0)):
+def build_graph(modelspec, geodata, stdfac=(1.0,1.0), quiet=False):
     """Given a model specification, build the tensorflow graph for that model
 
     :param modelspec: A model specification, as described in the documentation.
@@ -195,7 +196,7 @@ def build_graph(modelspec, geodata, stdfac=(1.0,1.0)):
     ## this purpose, since it includes the bias values, which aren't
     ## being regularized, but it should be close enough.
     regscl = regspec[1] * np.prod(geodata.shape) / nparam
-    print('regscl = {}'.format(regscl))
+    quiet or print('regscl = {}'.format(regscl))
     if regspec[0] == 'L1':
         reg = lambda: tf.contrib.layers.l1_regularizer(regscl)
     elif regspec[0] == 'L2':
@@ -413,7 +414,8 @@ def standardize(climdata):
 
     
 
-def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefile=None, outfile=None):
+def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefile=None, outfile=None,
+             quiet=False):
 
     """Train and evaluate a model.
 
@@ -510,7 +512,7 @@ def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefil
                     regnorm = regval * normfac
                     totalnorm = ltot * normfac
                     outstr = 'Model checkpoint at epoch= {}, \n\ttemploss per grid cell= {},  preciploss per grid cell= {}  \n\tregval= {}  totalloss= {}\n'
-                    sys.stdout.write(outstr.format(epoch,tempnorm, precipnorm, regnorm, totalnorm))
+                    quiet or sys.stdout.write(outstr.format(epoch,tempnorm, precipnorm, regnorm, totalnorm))
             else:
                 patcount += 1
 
@@ -755,3 +757,42 @@ def convnparam(layer, nchannel, bias=True):
 
     return np
 
+
+def config_report(config, strm=None):
+    """Generate a summary of the structure of a configuration
+    
+    :param config: configuration to check
+    :param strm: optional stream to write formatted report to
+    :return: tuple of stats (see below)
+
+    The stats returned are:
+        * number of downsampling stages
+        * number of scalar upsampling stages
+        * size of the field when the downsampling and scalar upsampling are joined.
+        * total number of parameters
+
+    """
+
+    nparam = validate_modelspec(config, quiet=True)
+
+    nds = len(config[0])
+    nus = len(config[1])
+
+    xsize = 1
+    ysize = 1
+
+    for stage in config[1]:
+        xsize *= stage[0][3][0]
+        ysize *= stage[0][3][1]
+
+
+    if strm is not None:
+        strm.write('\tDownsampling stages:\t{}\n'.format(nds))
+        strm.write('\t  Upsampling stages:\t{}\n'.format(nus))
+        strm.write('\t Field size at join:\t{} x {}\n'.format(xsize, ysize))
+        strm.write('\t   Total parameters:\t{}\n'.format(nparam))
+
+    return (nds, nus, (xsize, ysize), nparam)
+
+        
+          

@@ -242,7 +242,7 @@ def run_hypersearch(args):
     nmutate = args['nmutate']
     nepoch = args['nepoch']
 
-    initmutate = 3              # number of mutations to use in the initial pool
+    initmutate = 2*nmutate      # number of mutations to use in the initial pool
     
     ## Create the evaluation pool by adding the base config and filling
     ## out the rest with hybrids.  

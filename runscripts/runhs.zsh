@@ -15,7 +15,7 @@ tid=$SLURM_ARRAY_TASK_ID
 
 program="runhs.py"
 
-python ./$program -g 25 -e 500 ./testdata/dnnclim.dat ./hsearch.baseconfig$tid $tid
+python ./$program -g 50 -e 500 -m 8 ./testdata/dnnclim.dat ./hsearch.baseconfig$tid $tid
 
 date
 

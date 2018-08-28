@@ -3,6 +3,7 @@
 import argparse
 import numpy as np
 import sys
+import dnnclim.seedconfigs
 
 #### TODO: add a way to load one or more previously trained networks
 #### as a base configuration.
@@ -11,43 +12,6 @@ import sys
 ## (Sort of.  Tensorflow has its own seed, but we can't set it until
 ## the tensorflow graph is set up.)
 np.random.seed(8675309)
-
-
-## basic configurations.  These will be selected by a command line argument.
-## TODO: read these from a config file instead of defining inline.
-baseconfigs = [
-    (# config 1
-        (
-            ( # stage 1
-                ('C', 16, (3,3)),
-                ('C', 16, (3,3)),
-                ('D', (2,3))
-            ),
-        ),
-        (
-            ( # stage 1
-                ('U', 16, (3,3), (4,4)),
-                ('C', 16, (3,3))    
-            ),
-            ( # stage 2
-                ('U', 16, (3,3), (4,4)),
-                ('C', 16, (3,3)),
-            ),
-            ( # stage 3
-                ('U', 16, (3,3), (6,6)),
-                ('C', 16, (3,3)),
-            )
-        ),
-        (
-            ( # stage 1
-                ('U', 16, (3,3), (2,3)),
-                ('C', 8, (3,3)),
-                ('C', 2, (3,3))
-            ),
-        ),
-        {'learnrate':0.01, 'regularization':('L1', 1.0), 'temp-loss':('normal',1.0), 'precip-loss':('qp', 1.0)}
-    ),
-]
 
 
 parser = argparse.ArgumentParser()
@@ -69,16 +33,17 @@ parser.add_argument('-e', dest='nepoch', type=int, help='Number of epochs to tra
 argvals = parser.parse_args()
 
 args = vars(argvals)
-args['baseconfig'] = baseconfigs[argvals.configid] 
+args['baseconfig'] = dnnclim.seedconfigs.getconfig(argvals.configid)
 
 sys.stdout.write('Run options:\n')
 for opt in args:
     sys.stdout.write('\t{} :  {}\n'.format(opt, args[opt]))
 
-
-
 import dnnclim
 dnnclim.model.write_summaries = False
+sys.stdout.write('\nSeed model summary:\n')
+dnnclim.model.config_report(args['baseconfig'], sys.stdout)
+
 rslts = dnnclim.run_hypersearch(args)    
 
 sys.stdout.write('Index\tperf\tsavefile\n')
