@@ -309,19 +309,23 @@ def build_graph(modelspec, geodata, stdfac=(1.0,1.0), quiet=False):
                     ## corresponding stage of the downsampling branch.
                     upsamp = mk_xconvlayer(layer, layerin, reg) 
                     bindlayer = ds_stage_outputs[ds_stage_idx]
+
                     ds_stage_idx += 1
 
-                    tf.assert_equal(tf.shape(bindlayer)[0:3],
-                                    tf.shape(upsamp)[0:3],
-                                    summarize=3,
-                                    message='Incompatible shapes joining U branches: ')
                     layerin = tf.concat([bindlayer, upsamp], axis=3, name='join_U_branch')
+
+                    
                     # layerin = upsamp
                 elif layer[0] == 'C':
                     layerin = mk_convlayer(layer, layerin, reg)
                 else:
                     ## should be able to get here
                     raise RuntimeError("Invalid modelspec slipped through somehow")
+
+            ## End of stage.  Add the last layer to the list of stage inputs. 
+            ## TODO: It's not clear that we actually need to store
+            ## this list of stage inputs. We never really use it
+            us_stage_inputs.append(layerin)
 
         ## add a final pixel-by-pixel convolutional layer (i.e., a
         ## fully connected layer between channels for each grid cell).

@@ -15,68 +15,7 @@ if len(sys.argv) > 2:
 else:
     mbsize = 15
 
-configs = [
-    (# config 0
-        (
-            ( # stage 1
-                ('C', 10, (3,3)),
-                ('C', 10, (3,3)),
-                ('D', (2,3))
-            ),
-        ),
-        (
-            ( # stage 1
-                ('U', 10, (3,3), (4,4)),
-                ('C', 10, (3,3))    
-            ),
-            ( # stage 2
-                ('U', 10, (3,3), (4,4)),
-            ),
-            ( # stage 3
-                ('U', 10, (3,3), (6,6)),
-            )
-        ),
-        (
-            ( # stage 1
-                ('U', 10, (3,3), (2,3)),
-                ('C', 2, (3,3))
-            ),
-        ),
-        {'learnrate':0.01, 'regularization':('L1', 1.0), 'temp-loss':('normal',1.0), 'precip-loss':('qp', 1.0)}
-    ),
-
-    (# config 1
-        (
-            ( # stage 1
-                ('C', 16, (3,3)),
-                ('C', 16, (3,3)),
-                ('D', (2,3))
-            ),
-        ),
-        (
-            ( # stage 1
-                ('U', 16, (3,3), (4,4)),
-                ('C', 16, (3,3))    
-            ),
-            ( # stage 2
-                ('U', 16, (3,3), (4,4)),
-                ('C', 16, (3,3)),
-            ),
-            ( # stage 3
-                ('U', 16, (3,3), (6,6)),
-                ('C', 16, (3,3)),
-            )
-        ),
-        (
-            ( # stage 1
-                ('U', 16, (3,3), (2,3)),
-                ('C', 8, (3,3)),
-                ('C', 2, (3,3))
-            ),
-        ),
-        {'learnrate':0.01, 'regularization':('L1', 1.0), 'temp-loss':('normal',1.0), 'precip-loss':('qp', 1.0)}
-    ),
-]
+configs = [dnnclim.seedconfigs.getconfig(7)]
     
 
 infile = open('testdata/dnnclim.dat','rb')
