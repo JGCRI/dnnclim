@@ -270,7 +270,7 @@ def run_hypersearch(args):
         """Run a config and return a tuple of (performance, savefile)"""
         (sf, of) = rr.filenames(idx)
         (perf, ckptfile, niter) = dnnclim.runmodel(config, climdata, stdfac=stdfac, epochs=nepoch,
-                                                   savefile=sf, outfile=of)
+                                                   savefile=sf, outfile=of, quiet=True)
         return (perf, ckptfile)
 
     for gen in range(ngen):

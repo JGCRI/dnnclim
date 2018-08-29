@@ -450,6 +450,8 @@ def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefil
     (scalarin, groundtruth, output, natout, temploss, preciploss,
      reg_pen, total_loss, perf, train_step) = build_graph(modelspec, climdata['geo'], stdfac)
 
+    outdata = None              # Apparently it is possible to get through the loop without assigning outdata
+    
     if savefile is not None:
         ckptr = tf.train.Saver()
         epochckpt = -1          # epoch when the model was last checkpointed
@@ -527,7 +529,7 @@ def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefil
             
     ## Write outdata from the last epoch that improved the results
     ## (if requested)
-    if outfile is not None:
+    if outfile is not None and outdata is not None:
         ofs = open(outfile,'wb')
         pickle.dump(outdata, ofs)
         ofs.close()
