@@ -224,6 +224,7 @@ def run_hypersearch(args):
                         generation
         * nmutate     : number of mutations to apply to each hybrid
         * nepoch      : number of epochs to train each model in evaluation
+        * dt          : minimum time (in minutes) between index writes (default = 10)
 
     """
 
@@ -241,6 +242,7 @@ def run_hypersearch(args):
     nspawn = args['nspawn']
     nmutate = args['nmutate']
     nepoch = args['nepoch']
+    dt = args.get('dt', 10)
 
     initmutate = 2*nmutate      # number of mutations to use in the initial pool
     
@@ -273,6 +275,7 @@ def run_hypersearch(args):
                                                    savefile=sf, outfile=of, quiet=True)
         return (perf, ckptfile)
 
+    clean = True             # indicator of whether the disk copy of the index is up to date
     for gen in range(ngen):
         sys.stdout.write('Generation: {}\n'.format(gen))
         if len(pool) == 0:
@@ -305,8 +308,12 @@ def run_hypersearch(args):
         pool = []
 
         ## Write out the run data we've collected so far
-        rr.writeindex()
+        clean = rr.writeindex(dt)
 
+    ## Ensure that the last round of results has been written
+    if not clean:
+        rr.writeindex(0)
+        
     ## collect and return summary of results
     indices = rr.findidx(keepnets)
     return rr.summarize(indices)

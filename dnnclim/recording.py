@@ -13,6 +13,7 @@
 import yaml
 import os
 import numpy as np
+import time
 
 class RunRecorder:
     """Structure for keeping and writing records of runs performed"""
@@ -36,8 +37,6 @@ class RunRecorder:
         self.idx = 0            # Serial index of runs
         self.runs = {}          # dictionary of run data, indexed by serial number
         self.indices = {}       # dictionary of serial numbers, indexed by model spec
-        self.unwritten = []     # Serial numbers of runs stored in self.runs but not yet written
-                                #   to the index.
 
         if recorddir is None:
             recorddir = os.path.join(os.getcwd(), 'runrecords')
@@ -55,6 +54,7 @@ class RunRecorder:
             raise IOError('Directory {} exists, and noclobber is set.'.format(self.recorddir))
 
         self.index = open(os.path.join(self.recorddir, 'index.yml'), 'w')
+        self.tlast = 0          # time of the last write
         ## TODO: write a comment with the model version at the top of the file.
 
     def newrun(self, modelspec):
@@ -80,7 +80,7 @@ class RunRecorder:
         self.runs[idx] = {}
         self.runs[idx]['modelspec'] = modelspec
         self.runs[idx]['final-save'] = None # Won't be known until we do the run
-        self.runs[idx]['lossval'] = None    # Same here.
+        self.runs[idx]['perf'] = None    # Same here.
 
 
         runstr = 'save{:06d}'.format(idx) 
@@ -88,8 +88,6 @@ class RunRecorder:
         self.runs[idx]['savebase'] = os.path.join(self.tfsaves, runstr)
         self.runs[idx]['outfile'] = os.path.join(self.outputs, outfilename)
 
-        self.unwritten.append(idx)   # Stored but not yet written
-        
         return idx
 
     def getconfig(self, idx):
@@ -129,12 +127,12 @@ class RunRecorder:
         return [self.indices[repr(model)] for model in modelspecs]
 
 
-    def record_rslts(self, idxorspec, lossval, finalsave):
+    def record_rslts(self, idxorspec, perf, finalsave):
         """Record the results of training a given model.
 
         :param idxorspec: Index returned by newrun(), or a modelspec
-        :param lossval: Best value of the loss function achieved
-        :param finalsave: Final save file written by tensorflow.
+        :param perf: Best performance achieved by the model
+        :param finalsave: Final save file written by tensorflow
 
         """
 
@@ -143,24 +141,37 @@ class RunRecorder:
         else:
             [idx] = findidx([idxorspec])
 
-        self.runs[idx]['lossval'] = lossval
+        self.runs[idx]['perf'] = perf
         self.runs[idx]['final-save'] = finalsave
 
 
-    def writeindex(self):
-        """Write any runs recorded but not yet written into the index.
+    def writeindex(self, dt=0):
+        """Write all runs into the index, if sufficient time has elapsed since the last write.
 
-        Once you write a run into the index, there is no way to revise
-        its entry, so make sure that results have been recorded for
-        all outstanding runs before calling this function.
+        :param dt: Minimum time since last write, in minutes.  A value of 0 forces an immediate write.
+        :return: bool indicating whether the data was written
+
+        This updates the index with data for all runs currently
+        available.  The entire index is rewritten, so updates to runs
+        that were written in a previous dump will be revised.  In
+        other words, you get the current state of the index, not a log
+        of its state over time.  If dt>0, then the write will be
+        suppressed unless at least that much time has passed since the
+        last dump.  This feature can be used to limit the amount of
+        disk traffic on systems where disk performance is an issue.
 
         """
 
-        writevals = {idx:self.runs[idx] for idx in self.unwritten}
-
-        self.index.write(yaml.dump(writevals))
-        self.index.flush()
-        self.unwritten = []
+        ## Rewind the file to the beginning
+        t = time.time()
+        if t-self.tlast >= 60*dt:
+            self.index.seek(0) 
+            self.index.write(yaml.dump(self.runs))
+            self.index.flush()
+            self.tlast = t
+            return True
+        else:
+            return False
 
     def make_sortkey(self):
         """Create a function that can be passed to list.sort() as a sort key.
@@ -173,7 +184,7 @@ class RunRecorder:
 
         def sortkey(config):
             [idx] = self.findidx([config]) # TODO: really need a class for configs; too easy to forget the brackets.
-            return np.sum(self.runs[idx]['lossval'])
+            return np.sum(self.runs[idx]['perf'])
 
         return sortkey
             
@@ -185,5 +196,5 @@ class RunRecorder:
 
         """
 
-        return [(idx, self.runs[idx]['lossval'], self.runs[idx]['final-save']) for idx in indices]
+        return [(idx, self.runs[idx]['perf'], self.runs[idx]['final-save']) for idx in indices]
     

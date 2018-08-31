@@ -29,6 +29,7 @@ parser.add_argument('-m', dest='nmutate', type=int, help='Number of mutations to
                     default=1)
 parser.add_argument('-e', dest='nepoch', type=int, help='Number of epochs to train each model when evaluating',
                     default=1000)
+parser.add_argument('-dt', type=int, help='Minimum time between data dumps to disk (in minutes)', default=10)
 
 argvals = parser.parse_args()
 
