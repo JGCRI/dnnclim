@@ -454,7 +454,7 @@ def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefil
     perfout = [np.inf, np.inf]  # ... or perfout.
     
     if savefile is not None:
-        ckptr = tf.train.Saver()
+        ckptr = tf.train.Saver(max_to_keep=1)
         epochckpt = -1          # epoch when the model was last checkpointed
         ## factor to convert total error to mean error per grid cell.
         fldsize = climdata['dev']['fld'].shape
