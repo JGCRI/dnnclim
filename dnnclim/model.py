@@ -451,6 +451,7 @@ def runmodel(modelspec, climdata, stdfac=None, epochs=100, batchsize=15, savefil
      reg_pen, total_loss, perf, train_step) = build_graph(modelspec, climdata['geo'], stdfac)
 
     outdata = None              # Apparently it is possible to get through the loop without assigning outdata
+    perfout = [np.inf, np.inf]  # ... or perfout.
     
     if savefile is not None:
         ckptr = tf.train.Saver()
