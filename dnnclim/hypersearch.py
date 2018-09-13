@@ -271,8 +271,15 @@ def run_hypersearch(args):
     def run_pool_member(config, idx):
         """Run a config and return a tuple of (performance, savefile)"""
         (sf, of) = rr.filenames(idx)
-        (perf, ckptfile, niter) = dnnclim.runmodel(config, climdata, stdfac=stdfac, epochs=nepoch,
-                                                   savefile=sf, outfile=of, quiet=True)
+        try:
+            (perf, ckptfile, niter) = dnnclim.runmodel(config, climdata, stdfac=stdfac, epochs=nepoch,
+                                                       savefile=sf, outfile=of, quiet=True)
+        except Error as e:
+            sys.stderr.write("###Error running model: {}\n".format(e))
+            sys.stderr.write("###Config: {}\n".format(config))
+            perf = [9.99e99, 9.99e99]
+            ckptfile = "/dev/null"
+            
         return (perf, ckptfile)
 
     clean = True             # indicator of whether the disk copy of the index is up to date
