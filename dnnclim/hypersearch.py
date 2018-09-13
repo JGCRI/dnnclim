@@ -28,17 +28,15 @@ def mutate_config(modelspec):
     modelspec = list(modelspec)
     ibranch = np.random.randint(len(modelspec)) # len(modelspec) should be 4.
 
-    if ibranch == 0:
-        modelspec[ibranch] = mutate_branch(modelspec[ibranch], 'D')
-    elif ibranch == 1 or ibranch == 2:
-        modelspec[ibranch] = mutate_branch(modelspec[ibranch], 'U')
+    if ibranch < 3:
+        modelspec[ibranch] = mutate_branch(modelspec[ibranch])
     else:
         modelspec[ibranch] = mutate_otherparams(modelspec[ibranch])
 
     return tuple(modelspec)
 
 
-def mutate_branch(branch, branchtype):
+def mutate_branch(branch):
     """Apply a single mutation to a branch.
 
     Select a stage at random from the branch and apply a mutation to
@@ -48,16 +46,14 @@ def mutate_branch(branch, branchtype):
 
     branch = list(branch)
     istage = np.random.randint(len(branch))
-    branch[istage] = mutate_stage(branch[istage], branchtype)
+    branch[istage] = mutate_stage(branch[istage])
 
     return tuple(branch)
     
 
-def mutate_stage(stage, branchtype):
+def mutate_stage(stage):
     """Mutate a stage.
     :param stage: structure of the stage to mutate 
-    :param branchtype: Type of the branch the stage came from.  Either 'D' (downsampling) 
-             or 'U' (upsampling)
     :return: new stage config
 
     A downsampling (upsampling) stage can be mutated by any one of:
@@ -70,35 +66,80 @@ def mutate_stage(stage, branchtype):
 
     stage = list(stage)         # make stage mutable
 
-    if len(stage) == 1:
-        ## only option in this case is to add a conv layer
+    ## Decide what kind of mutation we are going to apply.
+    if stage[0][0] == 'D':
+        ## stage has nothing in it but a single max pool layer; only
+        ## option in this case is to add a conv layer
         choice = 0
     else:
-        choice = np.random.randint(4)
+        choicevalid = False
+        while not choicevalid:
+            choice = np.random.randint(4)
+            if choice == 1 and len(stage) == 1:
+                ## We're trying to delete the only layer in the stage.
+                ## That's no good.
+                continue
+            else:
+                choicevalid = True
 
 
 
         
     if choice==0:
+        ## Adding a layer
         inew = np.random.randint(len(stage)) # [0, N-1]
-        if branchtype == 'U':
+        if stage[0][0] == 'U':
+            ## in upsampling branches the new layer can't go before
+            ## the first one, but it can go after the last one.
             inew += 1
+        elif stage[0][0] == 'C' or stage[0][0] == 'D':
+            ## This situation is ok; no action required
+            pass
+        else:
+            ## Something wrong with the network structure
+            raise ValueError('Invalid stage: {}'.format(stage)) 
+            
         stage.insert(inew, newconv())
-    else: 
-        iconv = np.random.randint(len(stage)-1) # [0, N-2] not allowed to change the maxpool layer in dsbranch
-        if branchtype == 'U':
-            iconv += 1          # usbranch:  changing last is ok, but first is not.
-            
-        if choice==1:
-            stage.pop(iconv)               # doink!
-            
-        elif choice==2:
-            ## select a layer to change
-            stage[iconv] = mutate_nfilt(stage[iconv])
-            
-        elif choice==3:
-            stage[iconv] = mutate_nkern(stage[iconv])
+    else:
+        layervalid = False      # indicate whether we have chosen a
+                                # valid layer to mutate
+        while not layervalid:
+            iconv = np.random.randint(len(stage)) 
+            if stage[iconv][0] == 'D':
+                ## Can't change the max pooling layer in a
+                ## downsampling branch; pick again
+                continue
+            elif stage[iconv][0] == 'U' or stage[iconv][0] == 'C':
+                ## This is ok, no action required
+                pass
+            else:
+                ## something wrong.
+                raise ValueError('Invalid stage: {}'.format(stage)) 
 
+            ## At this point we are guaranteed that the stage is
+            ## either a transpose convolution ('U') or a convolution
+            ## ('C')
+            
+            if choice==1:
+                if stage[iconv][0] == 'U':
+                    ## Can't delete a transpose convolution layer.
+                    ## pick again
+                    continue
+                else:
+                    stage.pop(iconv)               # doink!
+
+            elif choice==2:
+                ## Change number of filters in the layer.  This works
+                ## the same for convolution and transpose convolution.
+                stage[iconv] = mutate_nfilt(stage[iconv])
+
+            elif choice==3:
+                ## Change the kernel size.  This is also the same for
+                ## the two layer types.
+                stage[iconv] = mutate_nkern(stage[iconv])
+
+            ## If we got to here, we selected a valid layer
+            layervalid = True 
 
     return tuple(stage)
 
@@ -117,9 +158,12 @@ def mutate_nfilt(layer):
         ## roll 2d6 - 7.  Reroll zeros
         chg = np.sum(np.random.randint(1,7,2)) - 7
         
-    newn = np.maximum(oldn + chg, 2) # minimum of 2 layers
+    newn = np.maximum(oldn + chg, 2) # minimum of 2 filters
 
-    return (layer[0], int(newn), layer[2])
+    layerout = list(layer)
+    layerout[1] = int(newn)
+
+    return tuple(layerout)
 
 def mutate_nkern(layer):
     chgx = 0
@@ -140,8 +184,11 @@ def mutate_nkern(layer):
         ## minimum kernel size is 1
         newx = np.maximum(oldx + chgx, 1)
         newy = np.maximum(oldy + chgy, 1)
+
+    layerout = list(layer)
+    layerout[2] = (int(newx), int(newy))
         
-    return (layer[0], layer[1], (int(newx), int(newy)))
+    return tuple(layerout)
 
 
 def mutate_otherparams(op):
@@ -274,7 +321,7 @@ def run_hypersearch(args):
         try:
             (perf, ckptfile, niter) = dnnclim.runmodel(config, climdata, stdfac=stdfac, epochs=nepoch,
                                                        savefile=sf, outfile=of, quiet=True)
-        except Error as e:
+        except Exception as e:
             sys.stderr.write("###Error running model: {}\n".format(e))
             sys.stderr.write("###Config: {}\n".format(config))
             perf = [9.99e99, 9.99e99]
