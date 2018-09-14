@@ -9,3 +9,4 @@ testdata
 __pycache__
 *.egg-info
 
+.Rproj.user
