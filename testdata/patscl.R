@@ -1,4 +1,7 @@
 #### Run a linear pattern scaling calculation on a set of input files.
+### Running this code on the full dataset used to train dnnclim results in 
+### dev set MAE of (2.91 K, 1.21 mm/day)
+
 library('assertthat')
 
 run_ps <- function(filelist, varname)
