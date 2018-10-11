@@ -2,6 +2,9 @@
 *.nc
 testdata
 
+# Ignore results brought back from cluster
+rslts
+
 # Ignore emacs backup files
 *~
 
